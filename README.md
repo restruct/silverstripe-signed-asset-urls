@@ -121,15 +121,15 @@ $signedUrl = $service->generateSignedURL('path/to/file.pdf', 3600, true);  // Se
 
 ### Available Methods
 
-| Method                                   | Description                                                      |
-|------------------------------------------|------------------------------------------------------------------|
+| Method                                   | Description                                                     |
+|------------------------------------------|-----------------------------------------------------------------|
 | `$File.SignedURL`                        | Signed URL with default TTL (returns normal URL for public files)|
-| `$File.SignedURL(ttl)`                   | Signed URL with custom TTL in seconds                            |
-| `$File.SignedURL(ttl, bindToSession)`    | Signed URL with TTL and session binding                          |
-| `$File.AutoURL`                          | Same as SignedURL (auto-detects if signing needed)               |
-| `$File.AutoURL('policy')`                | Signed URL using named policy (e.g., 'sh_sess', 'md')            |
-| `$File.AutoURL(ttl)`                     | Signed URL with custom TTL in seconds                            |
-| `$File.RequiresSignedURL`                | Boolean: true if file is protected                               |
+| `$File.SignedURL(ttl)`                   | Signed URL with custom TTL in seconds                           |
+| `$File.SignedURL(ttl, bindToSession)`    | Signed URL with TTL and session binding                         |
+| `$File.AutoURL`                          | Same as SignedURL (auto-detects if signing needed)              |
+| `$File.AutoURL('policy')`                | Signed URL using named policy (e.g., 'ss', 'm')            |
+| `$File.AutoURL(ttl)`                     | Signed URL with custom TTL in seconds                           |
+| `$File.RequiresSignedURL`                | Boolean: true if file is protected                              |
 
 ## Policies
 
