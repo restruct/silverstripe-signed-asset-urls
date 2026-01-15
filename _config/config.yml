@@ -33,11 +33,12 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
 # 1. SS_PROTECTED_ASSETS_PATH environment variable (relative to public/)
 # 2. SilverStripe\Assets\Flysystem\ProtectedAssetAdapter::$secure_folder (under ASSETS_PATH)
 
-# Add signed URL method to File and Image
+# Core implementation on DBFile (handles both originals and variants)
+SilverStripe\Assets\Storage\DBFile:
+  extensions:
+    - Restruct\SilverStripe\SignedAssetUrls\Extensions\SignedUrlDBFileExtension
+
+# Thin wrapper on File that delegates to DBFile (for $file->getSignedURL() convenience)
 SilverStripe\Assets\File:
   extensions:
-    - Restruct\SilverStripe\SignedAssetUrls\Extensions\SignedAssetUrlExtension
-
-SilverStripe\Assets\Image:
-  extensions:
-    - Restruct\SilverStripe\SignedAssetUrls\Extensions\SignedAssetUrlExtension
+    - Restruct\SilverStripe\SignedAssetUrls\Extensions\SignedUrlFileExtension

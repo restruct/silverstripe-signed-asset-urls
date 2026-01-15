@@ -356,7 +356,7 @@ Protection is checked at **two levels**:
 When you call `$file->getSignedURL()`, the extension checks if the file needs a signed URL:
 
 ```php
-// SignedAssetUrlExtension::requiresSignedURL()
+// SignedUrlDBFileExtension::requiresSignedURL()
 // Returns true if file requires signed URL
 
 // Check 1: CanViewType restrictions (includes parent folder inheritance)

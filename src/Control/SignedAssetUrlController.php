@@ -3,6 +3,7 @@
 namespace Restruct\SilverStripe\SignedAssetUrls\Control;
 
 use SilverStripe\Assets\File;
+use SilverStripe\Assets\Storage\AssetStore;
 use SilverStripe\Control\Controller;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
@@ -14,15 +15,17 @@ use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 /**
  * Controller for serving signed asset URLs.
  *
- * Validates the signature and expiry, then uses SilverStripe's File->getStream()
- * to serve the file content. This approach uses SilverStripe's built-in
- * AssetStore for file resolution, which handles hash-based paths automatically.
+ * Validates the signature and expiry, then uses SilverStripe's AssetStore
+ * to serve the file content directly. Supports both original files and
+ * variants (from Fill(), ScaleWidth(), etc.).
  *
  * URL format (S3-style with signature in query params):
  * - /signed-asset/{path}?s={hash}&e={expires}       (no session binding)
  * - /signed-asset/{path}?s={hash}&e={expires}&ss=1 (session-bound)
  *
- * Where {path} is the FileFilename (logical name, e.g. "folder/document.pdf").
+ * Where {path} is either:
+ * - FileFilename (logical name, e.g. "Uploads/document.pdf") for original files
+ * - Hash-prefixed path (e.g. "abc123/image__FillWzQwMCwyMjVd.jpg") for variants
  */
 class SignedAssetUrlController extends Controller
 {
@@ -52,16 +55,16 @@ class SignedAssetUrlController extends Controller
         $url = $request->getURL();
         $path = preg_replace('#^signed-asset/#', '', $url);
 
-        // URL decode the path - this is the FileFilename (logical name)
-        $filename = rawurldecode($path);
+        // URL decode the path
+        $assetPath = rawurldecode($path);
 
         /** @var AssetUrlSigningService $signingService */
         $signingService = Injector::inst()->get(AssetUrlSigningService::class);
 
         // Check if user can bypass signing (admin/CMS users)
         if (!$signingService->canBypassSigning()) {
-            // Validate signature against the filename
-            $validation = $signingService->validateSignature($hash, $expires, $filename, $sessionBound);
+            // Validate signature against the path
+            $validation = $signingService->validateSignature($hash, $expires, $assetPath, $sessionBound);
 
             if ($validation === 'expired') {
                 return $this->httpError(410, 'This link has expired');
@@ -72,14 +75,18 @@ class SignedAssetUrlController extends Controller
             }
         }
 
-        // Look up the File by FileFilename
-        $file = File::get()->filter('FileFilename', $filename)->first();
+        // Determine if this is a variant path (hash-prefixed) or original file path
+        // Variant paths look like: abc123/image__FillWzQwMCwyMjVd.jpg
+        // Original paths look like: Uploads/image.jpg
+        $isVariant = $this->isVariantPath($assetPath);
+
+        // Find the original File record
+        $file = $isVariant
+            ? $this->findFileByVariantPath($assetPath)
+            : File::get()->filter('FileFilename', $assetPath)->first();
 
         if (!$file) {
-            return $this->httpError(404, "File not found in DB: {$filename}");
-        }
-        if (!$file->exists()) {
-            return $this->httpError(404, "File DB record exists but file->exists() is false: {$filename}");
+            return $this->httpError(404, "File not found: {$assetPath}");
         }
 
         // Check if file is published (respects SilverStripe's protected assets system)
@@ -89,19 +96,146 @@ class SignedAssetUrlController extends Controller
             }
         }
 
-        // Get file stream using SilverStripe's AssetStore (handles path resolution)
-        $stream = $file->getStream();
+        // Serve the file (original or variant)
+        return $isVariant
+            ? $this->serveVariant($assetPath, $expires, $signingService)
+            : $this->serveOriginal($file, $expires, $signingService);
+    }
 
-        if (!$stream) {
-            return $this->httpError(404, 'File not found');
+    /**
+     * Check if a path looks like a variant (hash-prefixed)
+     *
+     * Variant paths: abc123/image__FillWzQwMCwyMjVd.jpg (hash/filename pattern)
+     * Original paths: Uploads/image.jpg (folder/filename pattern)
+     */
+    protected function isVariantPath(string $path): bool
+    {
+        // Variant paths have a hash prefix (10+ hex chars) followed by filename with variant suffix
+        // The hash is the first path segment before the first /
+        $parts = explode('/', $path, 2);
+        if (count($parts) < 2) {
+            return false;
         }
 
-        // Get file metadata
+        $firstSegment = $parts[0];
+
+        // Hash segments are typically 10 hex characters
+        if (preg_match('/^[a-f0-9]{10}$/i', $firstSegment)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Find the original File record from a variant path
+     *
+     * Variant paths look like: abc123/image__FillWzQwMCwyMjVd.jpg
+     * We need to find the File with matching Hash
+     */
+    protected function findFileByVariantPath(string $variantPath): ?File
+    {
+        // Extract hash from path (first segment)
+        $parts = explode('/', $variantPath, 2);
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        $hashPrefix = $parts[0];
+
+        // Find file by hash prefix (File.FileHash starts with this)
+        return File::get()->where([
+            'SUBSTRING(FileHash, 1, ' . strlen($hashPrefix) . ') = ?' => $hashPrefix
+        ])->first();
+    }
+
+    /**
+     * Serve original file using File::getStream()
+     */
+    protected function serveOriginal(File $file, int $expires, AssetUrlSigningService $signingService): HTTPResponse
+    {
+        if (!$file->exists()) {
+            return $this->httpError(404, "File exists in DB but not in storage");
+        }
+
+        $stream = $file->getStream();
+        if (!$stream) {
+            return $this->httpError(404, 'File stream not available');
+        }
+
         $mimeType = $file->getMimeType() ?: 'application/octet-stream';
         $fileSize = $file->getAbsoluteSize();
         $displayFilename = $file->Name;
 
-        // Create stream response
+        return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService);
+    }
+
+    /**
+     * Serve variant file using AssetStore directly
+     */
+    protected function serveVariant(string $variantPath, int $expires, AssetUrlSigningService $signingService): HTTPResponse
+    {
+        /** @var AssetStore $store */
+        $store = Injector::inst()->get(AssetStore::class);
+
+        // Parse the variant path to get filename and hash
+        $parts = explode('/', $variantPath, 2);
+        if (count($parts) < 2) {
+            return $this->httpError(404, 'Invalid variant path');
+        }
+
+        $hashPrefix = $parts[0];
+        $variantFilename = $parts[1];
+
+        // Find the original file to get the full hash
+        $file = $this->findFileByVariantPath($variantPath);
+        if (!$file) {
+            return $this->httpError(404, 'Original file not found');
+        }
+
+        // Extract variant identifier from filename (e.g., __FillWzQwMCwyMjVd from image__FillWzQwMCwyMjVd.jpg)
+        $variant = null;
+        if (preg_match('/__([A-Za-z0-9+\/=]+)\./', $variantFilename, $matches)) {
+            $variant = $matches[1];
+        }
+
+        // Try to get the stream using the AssetStore
+        // For protected assets, we access via the protected adapter
+        $stream = $store->getAsStream(
+            $file->getFilename(),
+            $file->getHash(),
+            $variant
+        );
+
+        if (!$stream) {
+            return $this->httpError(404, 'Variant file not found');
+        }
+
+        // Get metadata for the variant
+        $metadata = $store->getMetadata($file->getFilename(), $file->getHash(), $variant);
+        $fileSize = $metadata['size'] ?? null;
+
+        // Determine MIME type from variant filename
+        $extension = pathinfo($variantFilename, PATHINFO_EXTENSION);
+        $mimeType = $this->getMimeTypeFromExtension($extension);
+
+        // Use original filename for display (without variant suffix)
+        $displayFilename = $file->Name;
+
+        return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService);
+    }
+
+    /**
+     * Create HTTP stream response with appropriate headers
+     */
+    protected function createStreamResponse(
+        $stream,
+        ?int $fileSize,
+        string $mimeType,
+        string $displayFilename,
+        int $expires,
+        AssetUrlSigningService $signingService
+    ): HTTPResponse {
         $response = HTTPStreamResponse::create($stream, $fileSize);
         $response->setStatusCode(200);
         $response->addHeader('Content-Type', $mimeType);
@@ -121,6 +255,25 @@ class SignedAssetUrlController extends Controller
         }
 
         return $response;
+    }
+
+    /**
+     * Get MIME type from file extension
+     */
+    protected function getMimeTypeFromExtension(string $extension): string
+    {
+        $mimeTypes = [
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'gif' => 'image/gif',
+            'webp' => 'image/webp',
+            'svg' => 'image/svg+xml',
+            'pdf' => 'application/pdf',
+            'zip' => 'application/zip',
+        ];
+
+        return $mimeTypes[strtolower($extension)] ?? 'application/octet-stream';
     }
 
     /**
