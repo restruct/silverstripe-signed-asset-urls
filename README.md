@@ -153,17 +153,17 @@ use SilverStripe\Assets\File;
 
 // Get a file and generate signed URL
 $file = File::get()->byID(123);
-$signedUrl = $file->getSignedURL();  // Uses default TTL
+$signedUrl = $file->SignedURL();  // Uses default TTL
 
 // Custom TTL (2 hours)
-$signedUrl = $file->getSignedURL(7200);
+$signedUrl = $file->SignedURL(7200);
 
 // Session-bound URL (only works for current user's session)
-$signedUrl = $file->getSignedURL(3600, true);
+$signedUrl = $file->SignedURL(3600, true);
 
 // Using named policies (see Policies section below)
-$signedUrl = $file->getAutoURL('ss');  // 30s, session-bound
-$signedUrl = $file->getAutoURL('m');       // 1 hour, not session-bound
+$signedUrl = $file->AutoURL('ss');  // 30s, session-bound
+$signedUrl = $file->AutoURL('m');   // 1 hour, not session-bound
 
 // Check if a file requires signed URLs (useful for conditional logic)
 if ($file->requiresSignedURL()) {
@@ -233,7 +233,7 @@ Named policies provide convenient presets for TTL and session binding. Use them 
 Define your own policies in YAML config:
 
 ```yaml
-SilverStripe\Assets\File:
+Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
   policies:
     # Override or add policies
     instant: { ttl: 10, session: true }           # 10 seconds, session-bound
@@ -435,7 +435,7 @@ Protection is checked at **two levels**:
 
 #### 1. URL Generation (Extension)
 
-When you call `$file->getSignedURL()`, the extension checks if the file needs a signed URL:
+When you call `$file->SignedURL()`, the extension checks if the file needs a signed URL:
 
 ```php
 // SignedUrlDBFileExtension::requiresSignedURL()
