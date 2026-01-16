@@ -106,10 +106,38 @@ class SignedAssetUrlVerifyTask extends BuildTask
         $hasSessionFlag = str_contains($sessionUrl, 'ss=1');
         $this->output("Contains session flag (ss=1): " . ($hasSessionFlag ? "PASS" : "FAIL"));
 
+        // 7. Show file server configuration
+        $this->output("");
+        $this->output("=== File Server Configuration ===");
+        $fileServer = $service->getFileServer();
+        $this->output("ASSET_FILE_SERVER: " . $fileServer);
+
+        if ($fileServer === 'nginx') {
+            $this->output("");
+            $this->output("Nginx X-Accel-Redirect is enabled.");
+            $this->output("Add this to your nginx config:");
+            $this->output("");
+            foreach (explode("\n", $service->getNginxConfigHint()) as $line) {
+                $this->output("    " . $line);
+            }
+        } elseif ($fileServer === 'apache') {
+            $this->output("");
+            $this->output("Apache X-Sendfile is enabled.");
+            $this->output("Add this to your Apache config or .htaccess:");
+            $this->output("");
+            foreach (explode("\n", $service->getApacheConfigHint()) as $line) {
+                $this->output("    " . $line);
+            }
+        } else {
+            $this->output("Files are served via PHP streaming (default).");
+            $this->output("");
+            $this->output("For better performance, consider enabling web server file handoff:");
+            $this->output("  - Set ASSET_FILE_SERVER=nginx or ASSET_FILE_SERVER=apache in .env");
+            $this->output("  - Re-run this task to see required web server configuration");
+        }
+
         $this->output("");
         $this->output("=== Verification Complete ===");
-        $this->output("");
-        $this->output("Note: Files are served via PHP streaming using SilverStripe's AssetStore.");
     }
 
     /**

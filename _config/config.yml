@@ -14,25 +14,6 @@ SilverStripe\Core\Injector\Injector:
       Middlewares:
         SignedAssetUrlCacheMiddleware: '%$Restruct\SilverStripe\SignedAssetUrls\Middleware\SignedAssetUrlCacheMiddleware'
 
-Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
-  # Default TTL in seconds (1 hour)
-  default_ttl: 3600
-  # Bypass signing for users with these permissions
-  # Defaults to Versioned::$non_live_permissions (CMS_ACCESS_LeftAndMain, etc.)
-  # Set to custom array to override, e.g.: ['ADMIN', 'CMS_ACCESS']
-  # bypass_permissions: null
-  # Bind signed URLs to the user's session (URL only valid for same session)
-  bind_to_session: false
-  # Automatically adjust page Cache-Control headers based on signed URL TTLs
-  auto_cache_headers: true
-  # Check if files are published before serving (respects SilverStripe's protected assets)
-  # Set to false if you manage file access separately or don't use Versioned staging
-  check_published_status: true
-
-# Protected folder path is determined by:
-# 1. SS_PROTECTED_ASSETS_PATH environment variable (relative to public/)
-# 2. SilverStripe\Assets\Flysystem\ProtectedAssetAdapter::$secure_folder (under ASSETS_PATH)
-
 # Core implementation on DBFile (handles both originals and variants)
 SilverStripe\Assets\Storage\DBFile:
   extensions:

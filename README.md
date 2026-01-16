@@ -11,17 +11,6 @@ Time-expiring signed URLs for protected SilverStripe assets, similar to Amazon S
 - **Configurable TTL**: Default and per-URL time-to-live settings
 - **SilverStripe integration**: Uses SilverStripe's AssetStore for file resolution (works with hash-based paths)
 
-## Requirements
-
-- SilverStripe 5.x
-- PHP 8.1+
-
-## Installation
-
-```bash
-composer require restruct/silverstripe-signed-asset-urls
-```
-
 ## Configuration
 
 ### Environment Variables
@@ -61,6 +50,99 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
 ```
 
 All configuration options have sensible defaults - you typically only need to set `ASSET_SIGNING_SECRET` in `.env` to get started.
+
+## Web Server Configuration (Optional)
+
+By default, files are served via PHP streaming. For better performance on high-traffic sites, you can enable web server file handoff using X-Sendfile (Apache) or X-Accel-Redirect (Nginx).
+
+### Environment Variable
+
+Add to your `.env` file:
+
+```bash
+# File serving method: 'php' (default), 'apache', or 'nginx'
+ASSET_FILE_SERVER=php
+```
+
+### Nginx (X-Accel-Redirect)
+
+1. Set `ASSET_FILE_SERVER=nginx` in `.env`
+
+2. Add an internal location block to your nginx config. The location path is derived from your protected assets folder name:
+
+   **Default setup** (using `.protected` inside `public/assets`):
+   ```nginx
+   location /.protected/ {
+       internal;
+       alias /path/to/project/public/assets/.protected/;
+       # Alternative (more portable): root /path/to/project/public/assets;
+   }
+   ```
+
+   **Custom setup** (using `SS_PROTECTED_ASSETS_PATH`):
+   ```nginx
+   # If SS_PROTECTED_ASSETS_PATH="../protected_assets"
+   location /protected_assets/ {
+       internal;
+       alias /path/to/project/protected_assets/;
+       # Alternative (more portable): root /path/to/project;
+   }
+   ```
+
+3. Run the verification task to get your exact configuration:
+   ```bash
+   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
+   ```
+
+**How it works**: PHP validates the signed URL, then sends an `X-Accel-Redirect` header. Nginx intercepts this and serves the file directly from disk, bypassing PHP for the actual file transfer.
+
+### Apache (X-Sendfile)
+
+1. Install and enable mod_xsendfile:
+   ```bash
+   sudo a2enmod xsendfile
+   sudo systemctl restart apache2
+   ```
+
+2. Set `ASSET_FILE_SERVER=apache` in `.env`
+
+3. Add to your Apache config or `.htaccess`:
+
+   **Default setup**:
+   ```apache
+   <IfModule mod_xsendfile.c>
+       XSendFile On
+       XSendFilePath /path/to/project/public/assets/.protected
+   </IfModule>
+   ```
+
+   **Custom setup** (using `SS_PROTECTED_ASSETS_PATH`):
+   ```apache
+   <IfModule mod_xsendfile.c>
+       XSendFile On
+       XSendFilePath /path/to/project/protected_assets
+   </IfModule>
+   ```
+
+4. Run the verification task to get your exact configuration:
+   ```bash
+   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
+   ```
+
+**How it works**: PHP validates the signed URL, then sends an `X-Sendfile` header with the absolute file path. Apache serves the file directly, bypassing PHP for the actual file transfer.
+
+### Performance Considerations
+
+| Method | Pros | Cons |
+|--------|------|------|
+| **PHP** (default) | No server config needed, works everywhere | Higher memory usage, slower for large files |
+| **Nginx** | Very fast, low memory | Requires nginx config access |
+| **Apache** | Fast, works with .htaccess | Requires mod_xsendfile installation |
+
+For most sites, PHP streaming is sufficient. Consider web server handoff if you:
+- Serve many large files (videos, archives)
+- Have high concurrent download traffic
+- Need to minimize PHP memory usage
 
 ## Usage
 
@@ -383,15 +465,6 @@ When a signed URL is accessed, the controller validates:
 
 CMS users with `bypass_permissions` can always access any file.
 
-### Configuration
-
-```yaml
-Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
-  # Check published status when serving (default: true)
-  # Disable if you don't use Versioned staging on files
-  check_published_status: true
-```
-
 ### Projects with staging disabled (on File assets)
 
 If your project uses versioning only (no draft/live staging):
@@ -413,6 +486,8 @@ In this case:
 
 ```yaml
 Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
+  # Check published status when serving (default: true)
+  # Disable if you don't use Versioned staging on files
   check_published_status: false
 ```
 
@@ -448,7 +523,7 @@ Example output:
 === Signed Asset URLs Configuration Verification ===
 
 1. Environment variable ASSET_SIGNING_SECRET... OK
-2. Protected folder path: /path/to/restricted_assets... EXISTS
+2. Protected folder path: /path/to/protected_assets... EXISTS
 
 === Configuration ===
 default_ttl: 3600 seconds

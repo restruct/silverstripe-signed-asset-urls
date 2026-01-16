@@ -2,8 +2,6 @@
 
 namespace Restruct\SilverStripe\SignedAssetUrls\Services;
 
-use SilverStripe\Control\Controller;
-use SilverStripe\Control\Session;
 use SilverStripe\Assets\Flysystem\ProtectedAssetAdapter;
 use SilverStripe\Core\Config\Config;
 use SilverStripe\Core\Config\Configurable;
@@ -18,35 +16,58 @@ use SilverStripe\Versioned\Versioned;
  *
  * Environment variables:
  * - ASSET_SIGNING_SECRET: Required. Secret key for HMAC signing.
+ * - ASSET_FILE_SERVER: File serving method ('php', 'apache', or 'nginx').
  *
- * Config:
- * - default_ttl: Default URL lifetime in seconds (default: 3600)
- * - bypass_permissions: Permissions that bypass signing requirement
- * - bind_to_session: If true, URLs are only valid for the session that created them
- * - check_published_status: If true, verify files are published before serving (when using Versioned with staging)
+ * Protected folder path is determined by:
+ * 1. SS_PROTECTED_ASSETS_PATH environment variable (relative to public/)
+ * 2. SilverStripe\Assets\Flysystem\ProtectedAssetAdapter::$secure_folder (under ASSETS_PATH)
  */
 class AssetUrlSigningService
 {
     use Injectable;
     use Configurable;
 
+    /**
+     * Default URL lifetime in seconds (1 hour).
+     *
+     * @config int
+     */
     private static $default_ttl = 3600;
 
     /**
-     * Permissions that bypass signing. Defaults to Versioned::$non_live_permissions.
-     * Set to null to use Versioned's config, or provide custom array.
+     * Permissions that bypass signing requirement.
+     *
+     * Defaults to Versioned::$non_live_permissions (CMS_ACCESS_LeftAndMain, etc.).
+     * Set to null to use Versioned's config, or provide custom array to override,
+     * e.g.: ['ADMIN', 'CMS_ACCESS']
+     *
+     * @config array|null
      */
     private static $bypass_permissions = null;
 
+    /**
+     * Bind signed URLs to the user's session.
+     *
+     * When true, URLs are only valid for the session that created them.
+     *
+     * @config bool
+     */
     private static $bind_to_session = false;
 
     /**
-     * Whether to automatically adjust page cache headers based on signed URL TTLs
+     * Automatically adjust page Cache-Control headers based on signed URL TTLs.
+     *
+     * @config bool
      */
     private static $auto_cache_headers = true;
 
     /**
-     * Whether to check if files are published before serving (respects Versioned staging)
+     * Check if files are published before serving.
+     *
+     * Respects SilverStripe's protected assets system when using Versioned with staging.
+     * Set to false if you manage file access separately or don't use Versioned staging.
+     *
+     * @config bool
      */
     private static $check_published_status = true;
 
@@ -173,32 +194,22 @@ class AssetUrlSigningService
     /**
      * Get a token representing the current session
      *
-     * Uses a hash of the session ID rather than the raw ID for security
+     * Uses a hash of the session ID rather than the raw ID for security.
+     * Returns empty string if no session exists (CLI, tests, etc.) -
+     * session-bound URLs won't work in those contexts.
      *
-     * @return string
+     * @return string 8-character hash or empty string
      */
     protected function getSessionToken(): string
     {
         $sessionId = session_id();
 
         if (empty($sessionId)) {
-            // Try to get from SilverStripe's session
-            try {
-                $request = Controller::curr()->getRequest();
-                $session = $request->getSession();
-                $sessionId = $session->getAll()['SecurityID'] ?? session_id();
-            } catch (\Exception $e) {
-                $sessionId = '';
-            }
-        }
-
-        if (empty($sessionId)) {
             return '';
         }
 
         // Hash the session ID so we don't expose it
-        $secret = $this->getSigningSecret();
-        return substr(hash_hmac('sha256', $sessionId, $secret), 0, 8);
+        return substr(hash_hmac('sha256', $sessionId, $this->getSigningSecret()), 0, 8);
     }
 
     /**
@@ -223,7 +234,7 @@ class AssetUrlSigningService
     /**
      * Get the full filesystem path to protected assets folder
      *
-     * Uses same logic as SilverStripe's ProtectedAssetAdapter:
+     * Uses same logic as SilverStripe's ProtectedAssetAdapter::findRoot() (but instead returns full path)
      * 1. SS_PROTECTED_ASSETS_PATH environment variable (relative to PUBLIC_PATH)
      * 2. ProtectedAssetAdapter::$secure_folder config (under ASSETS_PATH)
      *
@@ -237,9 +248,7 @@ class AssetUrlSigningService
     {
         // First check SS_PROTECTED_ASSETS_PATH (same as SilverStripe's ProtectedAssetAdapter)
         // This path is relative to PUBLIC_PATH (webroot)
-        $path = Environment::getEnv('SS_PROTECTED_ASSETS_PATH');
-
-        if ($path) {
+        if ($path = Environment::getEnv('SS_PROTECTED_ASSETS_PATH')) {
             // Resolve relative to PUBLIC_PATH (webroot) for consistency with SS
             return $this->resolveRelativePath($path, PUBLIC_PATH);
         }
@@ -310,5 +319,84 @@ class AssetUrlSigningService
     public static function resetExpiryTracker(): void
     {
         self::$earliestExpiry = null;
+    }
+
+    /**
+     * Get configured file server type for serving protected assets.
+     *
+     * @return string 'php' (default), 'apache' (X-Sendfile), or 'nginx' (X-Accel-Redirect)
+     */
+    public function getFileServer(): string
+    {
+        return Environment::getEnv('ASSET_FILE_SERVER') ?: 'php';
+    }
+
+    /**
+     * Get nginx internal location derived from protected assets folder name.
+     *
+     * E.g., if SS_PROTECTED_ASSETS_PATH is '../restricted_assets', returns '/restricted_assets/'
+     * If using default (.protected), returns '/.protected/'
+     *
+     * @return string Internal location path for X-Accel-Redirect header
+     */
+    public function getNginxInternalLocation(): string
+    {
+        $protectedPath = $this->getProtectedFolderPath();
+        $folderName = basename($protectedPath);
+        return '/' . $folderName . '/';
+    }
+
+    /**
+     * Get absolute filesystem path for a protected asset.
+     *
+     * @param string $relativePath Path relative to protected folder (e.g., 'Uploads/abc123/file.pdf')
+     * @return string|null Absolute path if file exists, null otherwise
+     */
+    public function getAbsoluteFilePath(string $relativePath): ?string
+    {
+        $protectedPath = $this->getProtectedFolderPath();
+        $fullPath = $protectedPath . '/' . ltrim($relativePath, '/');
+        return file_exists($fullPath) ? $fullPath : null;
+    }
+
+    /**
+     * Get nginx configuration snippet for X-Accel-Redirect.
+     *
+     * @return string Nginx location block configuration
+     */
+    public function getNginxConfigHint(): string
+    {
+        $location = $this->getNginxInternalLocation();
+        $path = $this->getProtectedFolderPath();
+        $parentPath = dirname($path);
+
+        return <<<NGINX
+location {$location} {
+    internal;
+    alias {$path}/;
+    # Alternative (more portable): root {$parentPath};
+}
+NGINX;
+    }
+
+    /**
+     * Get Apache configuration snippet for X-Sendfile.
+     *
+     * Use this to generate the required Apache config for your protected assets folder.
+     * Requires mod_xsendfile to be installed and enabled.
+     *
+     * @return string Apache configuration directives
+     */
+    public function getApacheConfigHint(): string
+    {
+        $path = $this->getProtectedFolderPath();
+
+        return <<<APACHE
+# Enable mod_xsendfile (requires: a2enmod xsendfile)
+<IfModule mod_xsendfile.c>
+    XSendFile On
+    XSendFilePath {$path}
+</IfModule>
+APACHE;
     }
 }

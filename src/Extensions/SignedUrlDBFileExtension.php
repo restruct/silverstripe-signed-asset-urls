@@ -51,7 +51,12 @@ class SignedUrlDBFileExtension extends Extension
         $dbFile = $this->getOwner();
 
         if (!$dbFile->exists()) {
-            return null;
+            // Fallback: check if we have filename and hash even if exists() failed
+            // (exists() can return false for protected files that actually exist on disk)
+            if (empty($dbFile->getFilename()) || empty($dbFile->getHash())) {
+                return null;
+            }
+            // File data exists, continue even though exists() returned false
         }
 
         // Check if file requires signed URLs (is protected)

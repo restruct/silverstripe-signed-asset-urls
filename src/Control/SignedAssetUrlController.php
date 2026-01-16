@@ -9,7 +9,6 @@ use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Control\HTTPStreamResponse;
 use SilverStripe\Core\Injector\Injector;
-use SilverStripe\Versioned\Versioned;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 
 /**
@@ -90,16 +89,15 @@ class SignedAssetUrlController extends Controller
         }
 
         // Check if file is published (respects SilverStripe's protected assets system)
+        // Versioned::isPublished() handles both staging and versioning-only modes
         if ($signingService->shouldCheckPublishedStatus() && !$signingService->canBypassSigning()) {
-            if (!$this->isFilePublished($file)) {
+            if (!$file->isPublished()) {
                 return $this->httpError(403, 'File not available');
             }
         }
 
-        // Serve the file (original or variant)
-        return $isVariant
-            ? $this->serveVariant($assetPath, $expires, $signingService)
-            : $this->serveOriginal($file, $expires, $signingService);
+        // Serve the file (pass variantPath for variants, null for originals)
+        return $this->serveFile($file, $isVariant ? $assetPath : null, $expires, $signingService);
     }
 
     /**
@@ -150,77 +148,72 @@ class SignedAssetUrlController extends Controller
     }
 
     /**
-     * Serve original file using File::getStream()
+     * Serve file (original or variant) using X-Sendfile/X-Accel-Redirect or PHP streaming.
+     *
+     * @param File $file The File record
+     * @param string|null $variantPath For variants: hash-prefixed path (e.g., "abc123/image__FillWzQwMCwyMjVd.jpg")
+     * @param int $expires Expiry timestamp for cache headers
+     * @param AssetUrlSigningService $signingService Signing service instance
      */
-    protected function serveOriginal(File $file, int $expires, AssetUrlSigningService $signingService): HTTPResponse
+    protected function serveFile(File $file, ?string $variantPath, int $expires, AssetUrlSigningService $signingService): HTTPResponse
     {
-        if (!$file->exists()) {
-            return $this->httpError(404, "File exists in DB but not in storage");
-        }
-
-        $stream = $file->getStream();
-        if (!$stream) {
-            return $this->httpError(404, 'File stream not available');
-        }
-
-        $mimeType = $file->getMimeType() ?: 'application/octet-stream';
-        $fileSize = $file->getAbsoluteSize();
         $displayFilename = $file->Name;
 
-        return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService);
-    }
-
-    /**
-     * Serve variant file using AssetStore directly
-     */
-    protected function serveVariant(string $variantPath, int $expires, AssetUrlSigningService $signingService): HTTPResponse
-    {
-        /** @var AssetStore $store */
-        $store = Injector::inst()->get(AssetStore::class);
-
-        // Parse the variant path to get filename and hash
-        $parts = explode('/', $variantPath, 2);
-        if (count($parts) < 2) {
-            return $this->httpError(404, 'Invalid variant path');
+        // Determine MIME type and relative path based on original vs variant
+        if ($variantPath) {
+            $extension = pathinfo($variantPath, PATHINFO_EXTENSION);
+            $mimeType = $this->getMimeTypeFromExtension($extension);
+            // Build full relative path: folder/hashprefix/filename__variant.ext
+            $dirname = dirname($file->getFilename());
+            $relativePath = ($dirname !== '.' ? $dirname . '/' : '') . $variantPath;
+        } else {
+            if (!$file->exists()) {
+                return $this->httpError(404, "File exists in DB but not in storage");
+            }
+            $mimeType = $file->getMimeType() ?: 'application/octet-stream';
+            $relativePath = $this->computeOnDiskPath($file);
         }
 
-        $hashPrefix = $parts[0];
-        $variantFilename = $parts[1];
-
-        // Find the original file to get the full hash
-        $file = $this->findFileByVariantPath($variantPath);
-        if (!$file) {
-            return $this->httpError(404, 'Original file not found');
+        // Try X-Sendfile/X-Accel-Redirect first (more efficient than PHP streaming)
+        if ($signingService->getFileServer() !== 'php') {
+            $absolutePath = $signingService->getAbsoluteFilePath($relativePath);
+            if ($absolutePath) {
+                $response = $this->createWebServerResponse(
+                    $relativePath,
+                    filesize($absolutePath),
+                    $mimeType,
+                    $displayFilename,
+                    $expires,
+                    $signingService
+                );
+                if ($response) {
+                    return $response;
+                }
+            }
         }
 
-        // Extract variant identifier from filename (e.g., __FillWzQwMCwyMjVd from image__FillWzQwMCwyMjVd.jpg)
-        $variant = null;
-        if (preg_match('/__([A-Za-z0-9+\/=]+)\./', $variantFilename, $matches)) {
-            $variant = $matches[1];
-        }
+        // Fall back to PHP streaming
+        if ($variantPath) {
+            // Extract variant identifier (e.g., "FillWzQwMCwyMjVd" from "image__FillWzQwMCwyMjVd.jpg")
+            $variant = null;
+            $variantFilename = basename($variantPath);
+            if (preg_match('/__([A-Za-z0-9+\/=]+)\./', $variantFilename, $matches)) {
+                $variant = $matches[1];
+            }
 
-        // Try to get the stream using the AssetStore
-        // For protected assets, we access via the protected adapter
-        $stream = $store->getAsStream(
-            $file->getFilename(),
-            $file->getHash(),
-            $variant
-        );
+            /** @var AssetStore $store */
+            $store = Injector::inst()->get(AssetStore::class);
+            $stream = $store->getAsStream($file->getFilename(), $file->getHash(), $variant);
+            $metadata = $store->getMetadata($file->getFilename(), $file->getHash(), $variant);
+            $fileSize = $metadata['size'] ?? null;
+        } else {
+            $stream = $file->getStream();
+            $fileSize = $file->getAbsoluteSize();
+        }
 
         if (!$stream) {
-            return $this->httpError(404, 'Variant file not found');
+            return $this->httpError(404, $variantPath ? 'Variant file not found' : 'File stream not available');
         }
-
-        // Get metadata for the variant
-        $metadata = $store->getMetadata($file->getFilename(), $file->getHash(), $variant);
-        $fileSize = $metadata['size'] ?? null;
-
-        // Determine MIME type from variant filename
-        $extension = pathinfo($variantFilename, PATHINFO_EXTENSION);
-        $mimeType = $this->getMimeTypeFromExtension($extension);
-
-        // Use original filename for display (without variant suffix)
-        $displayFilename = $file->Name;
 
         return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService);
     }
@@ -277,47 +270,83 @@ class SignedAssetUrlController extends Controller
     }
 
     /**
-     * Check if a file is published (or doesn't use staging)
+     * Compute on-disk path for a File (adds hash prefix to FileFilename).
      *
-     * @param File $file The file to check
-     * @return bool True if file should be publicly accessible
+     * Converts FileFilename (e.g., 'Uploads/image.jpg') to actual on-disk path
+     * (e.g., 'Uploads/abc1234567/image.jpg') in the protected assets folder.
+     *
+     * @param File $file The file record
+     * @return string Relative path with hash prefix
      */
-    protected function isFilePublished(File $file): bool
+    protected function computeOnDiskPath(File $file): string
     {
-        // First check: Does File class use Versioned with staging at all?
-        if (!$this->fileClassUsesStaging()) {
-            return true;
-        }
-
-        // File uses staging - check if it exists on Live stage
-        return Versioned::withVersionedMode(function () use ($file) {
-            Versioned::set_stage(Versioned::LIVE);
-            return File::get()->byID($file->ID) !== null;
-        });
+        $hashPrefix = substr($file->getHash(), 0, 10);
+        $dirname = dirname($file->getFilename());
+        $basename = basename($file->getFilename());
+        return ($dirname !== '.' ? $dirname . '/' : '') . $hashPrefix . '/' . $basename;
     }
 
     /**
-     * Check if the File class is configured with Versioned staging
+     * Create response using web server file handoff (X-Sendfile or X-Accel-Redirect).
      *
-     * @return bool True if File uses Versioned with Live stage
+     * @param string $relativePath Path relative to protected folder
+     * @param int|null $fileSize File size in bytes (null if unknown)
+     * @param string $mimeType MIME type of the file
+     * @param string $displayFilename Filename to use in Content-Disposition header
+     * @param int $expires Expiry timestamp for cache headers
+     * @param AssetUrlSigningService $signingService Signing service instance
+     * @return HTTPResponse|null Response if successful, null to fall back to PHP streaming
      */
-    protected function fileClassUsesStaging(): bool
-    {
-        if (!File::has_extension(Versioned::class)) {
-            return false;
+    protected function createWebServerResponse(
+        string $relativePath,
+        ?int $fileSize,
+        string $mimeType,
+        string $displayFilename,
+        int $expires,
+        AssetUrlSigningService $signingService
+    ): ?HTTPResponse {
+        $fileServer = $signingService->getFileServer();
+
+        // Get absolute path for the file
+        $absolutePath = $signingService->getAbsoluteFilePath($relativePath);
+        if (!$absolutePath) {
+            return null; // File doesn't exist, fall back to PHP streaming
         }
 
-        $extensions = File::config()->get('extensions') ?? [];
+        $response = HTTPResponse::create();
+        $response->setStatusCode(200);
+        $response->addHeader('Content-Type', $mimeType);
 
-        foreach ($extensions as $extension) {
-            if ($extension === Versioned::class || $extension === 'SilverStripe\Versioned\Versioned') {
-                return true;
-            }
-            if (str_contains($extension, 'Versioned.versioned')) {
-                return false;
-            }
+        // Cache headers
+        if (!$signingService->canBypassSigning()) {
+            $maxAge = max(0, $expires - time());
+            $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
         }
 
-        return false;
+        // Content-Disposition
+        $downloadTypes = ['application/pdf', 'application/zip', 'application/octet-stream'];
+        if (in_array($mimeType, $downloadTypes)) {
+            $response->addHeader('Content-Disposition', 'attachment; filename="' . $displayFilename . '"');
+        } else {
+            $response->addHeader('Content-Disposition', 'inline; filename="' . $displayFilename . '"');
+        }
+
+        if ($fileServer === 'apache') {
+            // Apache mod_xsendfile
+            $response->addHeader('X-Sendfile', $absolutePath);
+            if ($fileSize) {
+                $response->addHeader('Content-Length', (string) $fileSize);
+            }
+        } elseif ($fileServer === 'nginx') {
+            // Nginx X-Accel-Redirect
+            $internalLocation = $signingService->getNginxInternalLocation();
+            $internalPath = rtrim($internalLocation, '/') . '/' . ltrim($relativePath, '/');
+            $response->addHeader('X-Accel-Redirect', $internalPath);
+            // Nginx handles Content-Length automatically
+        } else {
+            return null; // Unknown server type, fall back to PHP streaming
+        }
+
+        return $response;
     }
 }
