@@ -72,6 +72,20 @@ class AssetUrlSigningService
     private static $check_published_status = true;
 
     /**
+     * Named policies for signed URL generation.
+     *
+     * @config array<string, array{ttl: int, session: bool}>
+     */
+    private static $policies = [
+        'ss' => ['ttl' => 30, 'session' => true],       // Short, session-bound (30s)
+        's' => ['ttl' => 30, 'session' => false],       // Short, not session-bound
+        'ms' => ['ttl' => 3600, 'session' => true],     // Medium, session-bound (1h)
+        'm' => ['ttl' => 3600, 'session' => false],     // Medium, not session-bound
+        'ls' => ['ttl' => 86400, 'session' => true],    // Long, session-bound (24h)
+        'l' => ['ttl' => 86400, 'session' => false],    // Long, not session-bound
+    ];
+
+    /**
      * Track the earliest expiry time of signed URLs generated during this request
      */
     protected static $earliestExpiry = null;

@@ -24,28 +24,13 @@ use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 class SignedUrlDBFileExtension extends Extension
 {
     /**
-     * Named policies for signed URL generation.
-     *
-     * @config
-     * @var array<string, array{ttl: int, session: bool}>
-     */
-    private static array $policies = [
-        'ss' => ['ttl' => 30, 'session' => true],       // Short, session-bound (30s)
-        's' => ['ttl' => 30, 'session' => false],       // Short, not session-bound
-        'ms' => ['ttl' => 3600, 'session' => true],     // Medium, session-bound (1h)
-        'm' => ['ttl' => 3600, 'session' => false],     // Medium, not session-bound
-        'ls' => ['ttl' => 86400, 'session' => true],    // Long, session-bound (24h)
-        'l' => ['ttl' => 86400, 'session' => false],    // Long, not session-bound
-    ];
-
-    /**
      * Get a signed URL for this asset (original or variant)
      *
      * @param int|null $ttl Time-to-live in seconds (null = use default)
      * @param bool|null $bindToSession Bind to current session (null = use default)
      * @return string|null Signed URL, normal URL for public files, or null if not found
      */
-    public function getSignedURL(?int $ttl = null, ?bool $bindToSession = null): ?string
+    public function SignedURL(?int $ttl = null, ?bool $bindToSession = null): ?string
     {
         /** @var DBFile $dbFile */
         $dbFile = $this->getOwner();
@@ -128,22 +113,21 @@ class SignedUrlDBFileExtension extends Extension
      * @param bool|null $bindToSession Session binding (only used if $policyOrTtl is int/null)
      * @return string|null
      */
-    public function getAutoURL(string|int|null $policyOrTtl = null, ?bool $bindToSession = null): ?string
+    public function AutoURL(string|int|null $policyOrTtl = null, ?bool $bindToSession = null): ?string
     {
         $ttl = null;
 
         if (is_string($policyOrTtl)) {
-            $policies = $this->getOwner()->config()->get('policies');
+            $policies = AssetUrlSigningService::config()->get('policies');
             if (isset($policies[$policyOrTtl])) {
-                $policy = $policies[$policyOrTtl];
-                $ttl = $policy['ttl'] ?? null;
-                $bindToSession = $policy['session'] ?? null;
+                $ttl = $policies[$policyOrTtl]['ttl'] ?? null;
+                $bindToSession = $policies[$policyOrTtl]['session'] ?? null;
             }
         } elseif (is_int($policyOrTtl)) {
             $ttl = $policyOrTtl;
         }
 
-        return $this->getSignedURL($ttl, $bindToSession);
+        return $this->SignedURL($ttl, $bindToSession);
     }
 
     /**

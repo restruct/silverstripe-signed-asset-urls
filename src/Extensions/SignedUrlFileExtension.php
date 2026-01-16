@@ -8,7 +8,7 @@ use SilverStripe\Core\Extension;
 /**
  * Thin wrapper extension for File that delegates to DBFile's signed URL methods.
  *
- * The actual implementation is on DBFile (SignedAssetUrlExtension).
+ * The actual implementation is on DBFile (SignedUrlDBFileExtension).
  * This extension just provides the same methods on File for convenience.
  */
 class SignedUrlFileExtension extends Extension
@@ -18,11 +18,11 @@ class SignedUrlFileExtension extends Extension
      * @param bool|null $bindToSession
      * @return string|null
      */
-    public function getSignedURL(?int $ttl = null, ?bool $bindToSession = null): ?string
+    public function SignedURL(?int $ttl = null, ?bool $bindToSession = null): ?string
     {
         /** @var File $file */
         $file = $this->getOwner();
-        return $file->File->getSignedURL($ttl, $bindToSession);
+        return $file->File->SignedURL($ttl, $bindToSession);
     }
 
     /**
@@ -40,10 +40,10 @@ class SignedUrlFileExtension extends Extension
      * @param bool|null $bindToSession
      * @return string|null
      */
-    public function getAutoURL(string|int|null $policyOrTtl = null, ?bool $bindToSession = null): ?string
+    public function AutoURL(string|int|null $policyOrTtl = null, ?bool $bindToSession = null): ?string
     {
         /** @var File $file */
         $file = $this->getOwner();
-        return $file->File->getAutoURL($policyOrTtl, $bindToSession);
+        return $file->File->AutoURL($policyOrTtl, $bindToSession);
     }
 }
