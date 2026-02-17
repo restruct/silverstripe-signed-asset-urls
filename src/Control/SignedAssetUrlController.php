@@ -3,6 +3,9 @@
 namespace Restruct\SilverStripe\SignedAssetUrls\Control;
 
 use SilverStripe\Assets\File;
+use SilverStripe\Assets\FilenameParsing\ParsedFileID;
+use SilverStripe\Assets\Flysystem\FlysystemAssetStore;
+use SilverStripe\Assets\Flysystem\LocalFilesystemAdapter;
 use SilverStripe\Assets\Storage\AssetStore;
 use SilverStripe\Control\Controller;
 use SilverStripe\Control\HTTPRequest;
@@ -85,7 +88,7 @@ class SignedAssetUrlController extends Controller
             : File::get()->filter('FileFilename', $assetPath)->first();
 
         if (!$file) {
-            return $this->httpError(404, "File not found: {$assetPath}");
+            return $this->httpError(404, 'File not found');
         }
 
         // Check if file is published (respects SilverStripe's protected assets system)
@@ -142,9 +145,7 @@ class SignedAssetUrlController extends Controller
         $hashPrefix = $parts[0];
 
         // Find file by hash prefix (File.FileHash starts with this)
-        return File::get()->where([
-            'SUBSTRING(FileHash, 1, ' . strlen($hashPrefix) . ') = ?' => $hashPrefix
-        ])->first();
+        return File::get()->filter('FileHash:StartsWith', $hashPrefix)->first();
     }
 
     /**
@@ -159,36 +160,39 @@ class SignedAssetUrlController extends Controller
     {
         $displayFilename = $file->Name;
 
-        // Determine MIME type and relative path based on original vs variant
+        // Determine MIME type and resolved path based on original vs variant
         if ($variantPath) {
             $extension = pathinfo($variantPath, PATHINFO_EXTENSION);
             $mimeType = $this->getMimeTypeFromExtension($extension);
             // Build full relative path: folder/hashprefix/filename__variant.ext
             $dirname = dirname($file->getFilename());
             $relativePath = ($dirname !== '.' ? $dirname . '/' : '') . $variantPath;
+            // For variants, resolve via the signing service (known layout)
+            $absolutePath = $signingService->getAbsoluteFilePath($relativePath);
+            $resolved = $absolutePath ? [
+                'absolutePath' => $absolutePath,
+                'relativePath' => $relativePath,
+            ] : null;
         } else {
             if (!$file->exists()) {
-                return $this->httpError(404, "File exists in DB but not in storage");
+                return $this->httpError(404, 'File not found in storage');
             }
             $mimeType = $file->getMimeType() ?: 'application/octet-stream';
-            $relativePath = $this->computeOnDiskPath($file);
+            // Use framework resolution for originals (handles all storage layouts)
+            $resolved = $this->resolveFilePath($file);
         }
 
         // Try X-Sendfile/X-Accel-Redirect first (more efficient than PHP streaming)
-        if ($signingService->getFileServer() !== 'php') {
-            $absolutePath = $signingService->getAbsoluteFilePath($relativePath);
-            if ($absolutePath) {
-                $response = $this->createWebServerResponse(
-                    $relativePath,
-                    filesize($absolutePath),
-                    $mimeType,
-                    $displayFilename,
-                    $expires,
-                    $signingService
-                );
-                if ($response) {
-                    return $response;
-                }
+        if ($resolved && $signingService->getFileServer() !== 'php') {
+            $response = $this->createWebServerResponse(
+                $resolved,
+                $mimeType,
+                $displayFilename,
+                $expires,
+                $signingService
+            );
+            if ($response) {
+                return $response;
             }
         }
 
@@ -240,11 +244,12 @@ class SignedAssetUrlController extends Controller
         }
 
         // Set Content-Disposition for downloads (optional, based on file type)
+        $safeFilename = str_replace(['"', '\\'], '', $displayFilename);
         $downloadTypes = ['application/pdf', 'application/zip', 'application/octet-stream'];
         if (in_array($mimeType, $downloadTypes)) {
-            $response->addHeader('Content-Disposition', 'attachment; filename="' . $displayFilename . '"');
+            $response->addHeader('Content-Disposition', 'attachment; filename="' . $safeFilename . '"');
         } else {
-            $response->addHeader('Content-Disposition', 'inline; filename="' . $displayFilename . '"');
+            $response->addHeader('Content-Disposition', 'inline; filename="' . $safeFilename . '"');
         }
 
         return $response;
@@ -270,27 +275,50 @@ class SignedAssetUrlController extends Controller
     }
 
     /**
-     * Compute on-disk path for a File (adds hash prefix to FileFilename).
+     * Resolve a File to its absolute local filesystem path using framework resolution.
      *
-     * Converts FileFilename (e.g., 'Uploads/image.jpg') to actual on-disk path
-     * (e.g., 'Uploads/abc1234567/image.jpg') in the protected assets folder.
+     * Checks both protected and public stores via the framework's FileResolutionStrategy,
+     * which handles all storage layouts (hash paths, natural paths, DB hash lookups).
      *
-     * @param File $file The file record
-     * @return string Relative path with hash prefix
+     * @return array{absolutePath: string, relativePath: string}|null
      */
-    protected function computeOnDiskPath(File $file): string
+    protected function resolveFilePath(File $file): ?array
     {
-        $hashPrefix = substr($file->getHash(), 0, 10);
-        $dirname = dirname($file->getFilename());
-        $basename = basename($file->getFilename());
-        return ($dirname !== '.' ? $dirname . '/' : '') . $hashPrefix . '/' . $basename;
+        $store = Injector::inst()->get(AssetStore::class);
+        if (!$store instanceof FlysystemAssetStore) {
+            return null;
+        }
+
+        $parsedFileID = new ParsedFileID($file->getFilename(), $file->getHash() ?: '');
+
+        // Try protected first (most signed-asset files are protected), then public
+        foreach (['Protected', 'Public'] as $type) {
+            $filesystem = $store->{"get{$type}Filesystem"}();
+            $strategy = $store->{"get{$type}ResolutionStrategy"}();
+            $resolved = $strategy->searchForTuple($parsedFileID, $filesystem);
+
+            if ($resolved) {
+                $adapter = $filesystem->getAdapter();
+                if ($adapter instanceof LocalFilesystemAdapter) {
+                    $fileID = $resolved->getFileID();
+                    $absolutePath = $adapter->prefixPath($fileID);
+                    if (file_exists($absolutePath)) {
+                        return [
+                            'absolutePath' => $absolutePath,
+                            'relativePath' => $fileID,
+                        ];
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
      * Create response using web server file handoff (X-Sendfile or X-Accel-Redirect).
      *
-     * @param string $relativePath Path relative to protected folder
-     * @param int|null $fileSize File size in bytes (null if unknown)
+     * @param array{absolutePath: string, relativePath: string} $resolved Resolved file paths
      * @param string $mimeType MIME type of the file
      * @param string $displayFilename Filename to use in Content-Disposition header
      * @param int $expires Expiry timestamp for cache headers
@@ -298,20 +326,15 @@ class SignedAssetUrlController extends Controller
      * @return HTTPResponse|null Response if successful, null to fall back to PHP streaming
      */
     protected function createWebServerResponse(
-        string $relativePath,
-        ?int $fileSize,
+        array $resolved,
         string $mimeType,
         string $displayFilename,
         int $expires,
         AssetUrlSigningService $signingService
     ): ?HTTPResponse {
         $fileServer = $signingService->getFileServer();
-
-        // Get absolute path for the file
-        $absolutePath = $signingService->getAbsoluteFilePath($relativePath);
-        if (!$absolutePath) {
-            return null; // File doesn't exist, fall back to PHP streaming
-        }
+        $absolutePath = $resolved['absolutePath'];
+        $relativePath = $resolved['relativePath'];
 
         $response = HTTPResponse::create();
         $response->setStatusCode(200);
@@ -324,21 +347,23 @@ class SignedAssetUrlController extends Controller
         }
 
         // Content-Disposition
+        $safeFilename = str_replace(['"', '\\'], '', $displayFilename);
         $downloadTypes = ['application/pdf', 'application/zip', 'application/octet-stream'];
         if (in_array($mimeType, $downloadTypes)) {
-            $response->addHeader('Content-Disposition', 'attachment; filename="' . $displayFilename . '"');
+            $response->addHeader('Content-Disposition', 'attachment; filename="' . $safeFilename . '"');
         } else {
-            $response->addHeader('Content-Disposition', 'inline; filename="' . $displayFilename . '"');
+            $response->addHeader('Content-Disposition', 'inline; filename="' . $safeFilename . '"');
         }
 
         if ($fileServer === 'apache') {
-            // Apache mod_xsendfile
+            // Apache mod_xsendfile needs absolute path
             $response->addHeader('X-Sendfile', $absolutePath);
+            $fileSize = filesize($absolutePath);
             if ($fileSize) {
                 $response->addHeader('Content-Length', (string) $fileSize);
             }
         } elseif ($fileServer === 'nginx') {
-            // Nginx X-Accel-Redirect
+            // Nginx X-Accel-Redirect needs internal location + relative path
             $internalLocation = $signingService->getNginxInternalLocation();
             $internalPath = rtrim($internalLocation, '/') . '/' . ltrim($relativePath, '/');
             $response->addHeader('X-Accel-Redirect', $internalPath);
