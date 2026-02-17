@@ -537,3 +537,61 @@ Wrong hash (expect invalid): PASS
 Expired URL (expect expired): PASS
 ```
 
+### Manual Testing Checklist
+
+After making changes to the controller or signing service, verify the following:
+
+#### 1. Build and config verification
+
+```bash
+vendor/bin/sake dev/build flush=1
+vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
+```
+
+Both should complete without errors. The verify task checks signing secret, protected folder path, URL generation, and signature validation (valid, invalid, expired).
+
+#### 2. Signature validation (curl)
+
+Test that invalid signatures are rejected:
+
+```bash
+# Should return HTTP 403 (invalid signature)
+curl -k -s -o /dev/null -w "%{http_code}" \
+  "https://your-site.loc/signed-asset/path/to/file.pdf?s=invalidsignature&e=9999999999"
+```
+
+#### 3. File serving (browser)
+
+Load a page that renders signed asset URLs (e.g. a page with protected images or download links). Verify:
+
+- Images load correctly (check browser dev tools Network tab for 200 responses)
+- Download links work and serve the correct file
+- URLs contain the expected `?s=...&e=...` query parameters
+
+#### 4. File path resolution
+
+The controller uses framework-based file resolution (`resolveFilePath()`) which handles both hash-based paths (`Uploads/abc1234567/file.pdf`) and natural paths (`Uploads/file.pdf`). To verify resolution works for a specific file:
+
+```bash
+# Find a file with a known hash
+vendor/bin/sake dev/tasks/orm-query class=File "filter[FileHash:not]=" limit=3 fields=ID,FileFilename,FileHash
+
+# Check which storage layout is used on disk
+ls {protected_folder}/{dirname}/{hash10}/{basename}   # hash path
+ls {protected_folder}/{dirname}/{basename}             # natural path
+```
+
+The signed URL for that file should work regardless of which layout exists on disk.
+
+#### 5. Web server handoff (if configured)
+
+If `ASSET_FILE_SERVER` is set to `apache` or `nginx`:
+
+- Verify files are served without PHP streaming (check response headers for `X-Sendfile` or `X-Accel-Redirect` — note these headers are consumed by the web server and won't appear in browser dev tools)
+- Check PHP memory usage stays low when serving large files
+- If handoff fails, the controller falls through to PHP streaming automatically
+
+#### What is NOT covered by automated tests
+
+This module has no PHPUnit tests. The `resolveFilePath()` method requires a fully bootstrapped SilverStripe environment with actual filesystem adapters, making unit testing impractical without integration test infrastructure. All testing is manual via the checklist above and the `SignedAssetUrlVerifyTask`.
+
