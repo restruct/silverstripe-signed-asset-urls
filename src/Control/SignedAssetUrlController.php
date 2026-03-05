@@ -132,20 +132,32 @@ class SignedAssetUrlController extends Controller
      * Find the original File record from a variant path
      *
      * Variant paths look like: abc123/image__FillWzQwMCwyMjVd.jpg
-     * We need to find the File with matching Hash
+     * We need to find the File with matching Hash and Name.
+     *
+     * Filtering by Name is critical when multiple File records share the same hash
+     * (e.g. re-imports of the same image). Without it, File's default_sort='Name'
+     * can return the wrong record, causing variant path resolution to fail.
      */
     protected function findFileByVariantPath(string $variantPath): ?File
     {
-        // Extract hash from path (first segment)
+        // Extract hash and variant filename from path (first segment is hash prefix)
         $parts = explode('/', $variantPath, 2);
         if (count($parts) < 2) {
             return null;
         }
 
         $hashPrefix = $parts[0];
+        $variantFilename = $parts[1]; # e.g. "image__FillWzQwMCwyMjVd.jpg"
 
-        // Find file by hash prefix (File.FileHash starts with this)
-        return File::get()->filter('FileHash:StartsWith', $hashPrefix)->first();
+        # Extract original filename by stripping variant suffix
+        # "image__FillWzQwMCwyMjVd.jpg" → "image.jpg"
+        $originalName = preg_replace('/__[A-Za-z0-9+\/=]+\./', '.', $variantFilename);
+
+        # Filter by both hash and name to avoid returning wrong record when duplicates exist
+        return File::get()->filter([
+            'FileHash:StartsWith' => $hashPrefix,
+            'Name' => $originalName,
+        ])->first();
     }
 
     /**
@@ -197,8 +209,13 @@ class SignedAssetUrlController extends Controller
         }
 
         // Fall back to PHP streaming
-        if ($variantPath) {
-            // Extract variant identifier (e.g., "FillWzQwMCwyMjVd" from "image__FillWzQwMCwyMjVd.jpg")
+        // Try direct file path first (faster, works for all file server modes)
+        if ($resolved) {
+            $absolutePath = $resolved['absolutePath'];
+            $stream = fopen($absolutePath, 'rb');
+            $fileSize = filesize($absolutePath) ?: null;
+        } elseif ($variantPath) {
+            # Direct path unavailable, fall back to AssetStore resolution
             $variant = null;
             $variantFilename = basename($variantPath);
             if (preg_match('/__([A-Za-z0-9+\/=]+)\./', $variantFilename, $matches)) {
