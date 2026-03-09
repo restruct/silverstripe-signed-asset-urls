@@ -66,35 +66,113 @@ ASSET_FILE_SERVER=php
 
 ### Nginx (X-Accel-Redirect)
 
+**How it works:** PHP validates the signed URL, then sends an `X-Accel-Redirect` header pointing to an internal nginx location. Nginx intercepts this and serves the file directly from disk, bypassing PHP for the actual file transfer.
+
+#### Setup
+
 1. Set `ASSET_FILE_SERVER=nginx` in `.env`
 
-2. Add an internal location block to your nginx config. The location path is derived from your protected assets folder name:
+2. Add an `internal` location block to your nginx server config (see examples below)
 
-   **Default setup** (using `.protected` inside `public/assets`):
-   ```nginx
-   location /.protected/ {
-       internal;
-       alias /path/to/project/public/assets/.protected/;
-       # Alternative (more portable): root /path/to/project/public/assets;
-   }
-   ```
-
-   **Custom setup** (using `SS_PROTECTED_ASSETS_PATH`):
-   ```nginx
-   # If SS_PROTECTED_ASSETS_PATH="../protected_assets"
-   location /protected_assets/ {
-       internal;
-       alias /path/to/project/protected_assets/;
-       # Alternative (more portable): root /path/to/project;
-   }
-   ```
-
-3. Run the verification task to get your exact configuration:
+3. Run the verification task to confirm your setup:
    ```bash
    vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
    ```
 
-**How it works**: PHP validates the signed URL, then sends an `X-Accel-Redirect` header. Nginx intercepts this and serves the file directly from disk, bypassing PHP for the actual file transfer.
+#### How the location path is determined
+
+The module derives the location from `basename(SS_PROTECTED_ASSETS_PATH)`:
+
+| `SS_PROTECTED_ASSETS_PATH` | X-Accel-Redirect header | Required nginx location |
+|---|---|---|
+| _(not set, default `.protected`)_ | `/.protected/Uploads/abc123/file.pdf` | `/.protected/` |
+| `../restricted_assets` | `/restricted_assets/Uploads/abc123/file.pdf` | `/restricted_assets/` |
+| `/var/www/project/protected_assets` | `/protected_assets/Uploads/abc123/file.pdf` | `/protected_assets/` |
+
+**The location path must match the basename exactly.** A common mistake is using the wrong folder name (e.g., `/protected_assets/` when the env var resolves to a folder named `restricted_assets`).
+
+#### `root` vs `alias`
+
+Both work, but `root` is recommended — it's more portable:
+
+- **`root`** — nginx **appends** the full URI to the root path. Point `root` at the **parent** of the protected folder:
+  ```
+  location /restricted_assets/ + root .../current
+  → .../current/restricted_assets/Uploads/abc123/file.pdf  ✓
+  ```
+- **`alias`** — nginx **replaces** the location prefix with the alias path. Point `alias` at the **exact** folder (trailing slash required):
+  ```
+  location /restricted_assets/ + alias .../current/restricted_assets/
+  → .../current/restricted_assets/Uploads/abc123/file.pdf  ✓
+  ```
+
+With `root`, if you rename the folder, you only change the location — not the root. With `alias`, you repeat the full path. Either way, the path must be absolute — nginx does not resolve `..`.
+
+**Common mistake — `root` pointing to the folder itself:**
+```
+# WRONG: root points to the folder → path doubled!
+location /restricted_assets/ + root .../current/restricted_assets
+→ .../current/restricted_assets/restricted_assets/file.pdf  ✗
+```
+
+#### Can I reuse the server root?
+
+No. The `server { root ... }` points to the public webroot (e.g., `.../current/public`), but protected assets live **outside** `public/` as a sibling (e.g., `.../current/restricted_assets`). Nginx does not resolve `..` in `root`/`alias` directives, so you need a separate absolute path.
+
+#### Configuration examples
+
+**Default setup** (`.protected` inside `public/assets/`):
+```nginx
+location /.protected/ {
+    internal;
+    root /path/to/project/public/assets;
+}
+```
+
+**Custom `SS_PROTECTED_ASSETS_PATH`** (folder outside webroot):
+```nginx
+# If SS_PROTECTED_ASSETS_PATH resolves to .../current/restricted_assets
+location /restricted_assets/ {
+    internal;
+    root /path/to/project;
+}
+```
+
+**Laravel Forge with zero-downtime deployments:**
+```nginx
+# server root: /home/forge/sitename.com/current/public
+# SS_PROTECTED_ASSETS_PATH: /home/forge/sitename.com/current/restricted_assets
+
+location /restricted_assets/ {
+    internal;
+    root /home/forge/sitename.com/current;
+}
+```
+
+#### Where to place it
+
+Add the location block **after the PHP location block**, at the bottom of the `server { }` block. Since it's `internal`, ordering with other locations doesn't matter — but keeping it at the bottom makes it easy to spot as a non-standard addition.
+
+```nginx
+server {
+    root /home/forge/sitename.com/current/public;
+    # ... standard config ...
+
+    location ~ \.php$ {
+        # ... PHP-FPM ...
+    }
+
+    # Signed asset URLs — X-Accel-Redirect
+    location /restricted_assets/ {
+        internal;
+        root /home/forge/sitename.com/current;
+    }
+}
+```
+
+#### The `internal` directive
+
+This makes the location only respond to `X-Accel-Redirect` headers from PHP. Direct browser requests to `/restricted_assets/...` return 404. Without `internal`, anyone could bypass the signed URL check by requesting the path directly.
 
 ### Apache (X-Sendfile)
 
