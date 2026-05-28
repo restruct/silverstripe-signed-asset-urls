@@ -194,8 +194,10 @@ class SignedAssetUrlController extends Controller
             $resolved = $this->resolveFilePath($file);
         }
 
-        // Try X-Sendfile/X-Accel-Redirect first (more efficient than PHP streaming)
-        if ($resolved && $signingService->getFileServer() !== 'php') {
+        // Try X-Sendfile/X-Accel-Redirect first (more efficient than PHP streaming).
+        // Guard with is_file() — handing a non-existent path to the web server would
+        // produce its own 404 and we couldn't apply the no-op-variant fallback below.
+        if ($resolved && is_file($resolved['absolutePath']) && $signingService->getFileServer() !== 'php') {
             $response = $this->createWebServerResponse(
                 $resolved,
                 $mimeType,
@@ -209,25 +211,53 @@ class SignedAssetUrlController extends Controller
         }
 
         // Fall back to PHP streaming
+        $stream = null;
+        $fileSize = null;
+
         // Try direct file path first (faster, works for all file server modes)
-        if ($resolved) {
+        if ($resolved && is_file($resolved['absolutePath'])) {
             $absolutePath = $resolved['absolutePath'];
             $stream = fopen($absolutePath, 'rb');
             $fileSize = filesize($absolutePath) ?: null;
-        } elseif ($variantPath) {
-            # Direct path unavailable, fall back to AssetStore resolution
-            $variant = null;
-            $variantFilename = basename($variantPath);
-            if (preg_match('/__([A-Za-z0-9+\/=]+)\./', $variantFilename, $matches)) {
-                $variant = $matches[1];
+        }
+
+        // Variant fallbacks (only if direct path didn't yield a stream)
+        if (!$stream && $variantPath) {
+            $variant = $this->parseVariantIdentifier($variantPath);
+
+            # Fallback 1: AssetStore resolution (handles non-standard storage layouts)
+            if ($variant) {
+                /** @var AssetStore $store */
+                $store = Injector::inst()->get(AssetStore::class);
+                $stream = $store->getAsStream($file->getFilename(), $file->getHash(), $variant);
+                $metadata = $store->getMetadata($file->getFilename(), $file->getHash(), $variant);
+                $fileSize = $metadata['size'] ?? null;
             }
 
-            /** @var AssetStore $store */
-            $store = Injector::inst()->get(AssetStore::class);
-            $stream = $store->getAsStream($file->getFilename(), $file->getHash(), $variant);
-            $metadata = $store->getMetadata($file->getFilename(), $file->getHash(), $variant);
-            $fileSize = $metadata['size'] ?? null;
-        } else {
+            # Fallback 2: SS5 no-op-scale workaround.
+            # ImageManipulation::ScaleMaxWidth and friends produce a variant URL
+            # even when the source dimensions are already within the requested
+            # target (a no-op transformation) — but the variant file is not
+            # always materialised on disk, producing a "Variant file not found"
+            # 404 here. When this is the case, the variant content would have
+            # been a byte-identical copy of the original anyway, so we just
+            # stream the original's bytes at the variant URL.
+            #
+            # Scoping (DDoS-defensive):
+            #  - whitelisted Scale* methods only (no Fill/Pad/Crop)
+            #  - source dimension must be <= target (the no-op case only)
+            #  - target dimension sanity-capped
+            # Zero new attack surface vs the original file URL.
+            if (!$stream && $variant) {
+                $stream = $this->tryServeOriginalForNoOpVariant($file, $variant);
+                if ($stream) {
+                    $fileSize = $file->getAbsoluteSize();
+                }
+            }
+        }
+
+        // Original (non-variant) fallback
+        if (!$stream && !$variantPath) {
             $stream = $file->getStream();
             $fileSize = $file->getAbsoluteSize();
         }
@@ -237,6 +267,92 @@ class SignedAssetUrlController extends Controller
         }
 
         return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService);
+    }
+
+    /**
+     * Extract the variant identifier (e.g. "ScaleMaxWidthWzI0MDBd") from a variant path.
+     */
+    protected function parseVariantIdentifier(string $variantPath): ?string
+    {
+        $variantFilename = basename($variantPath);
+        if (preg_match('/__([A-Za-z0-9+\/=_-]+)\./', $variantFilename, $matches)) {
+            return $matches[1];
+        }
+        return null;
+    }
+
+    /**
+     * SS5 "ScaleMaxWidth on already-smaller source = variant URL with no
+     * variant file" workaround. When the requested variant is a no-op scale
+     * (source dimension already within target), return a stream of the
+     * original file's bytes — the variant would have been a byte-identical
+     * copy anyway.
+     *
+     * Strictly scoped to avoid becoming a DDoS amplifier:
+     *  - Scale* methods only (no Fill/Pad/Crop expensive operations)
+     *  - Only when source dim ≤ target dim (the no-op case)
+     *  - Target dimension sanity-capped at 16000px
+     *
+     * Returns null (and the caller 404s) for any case outside this window.
+     *
+     * @return resource|null Stream of original file bytes, or null if not applicable
+     */
+    protected function tryServeOriginalForNoOpVariant(File $file, string $variantIdentifier)
+    {
+        # Variant identifier format: "{MethodName}{base64url(jsonArgs)}" — there's
+        # no delimiter, so we match against a whitelist of known method names
+        # (longest first so "ScaleMaxWidth" wins over "ScaleWidth" prefix match).
+        # Whitelist: only no-op-capable Scale methods. Fill/Pad/Crop are NOT
+        # safe to "serve as original" because they crop/letterbox and produce
+        # visually different output at different dimensions.
+        $methodAccessor = [
+            'ScaleMaxWidth'  => 'getWidth',
+            'ScaleMaxHeight' => 'getHeight',
+            'ScaleWidth'     => 'getWidth',
+            'ScaleHeight'    => 'getHeight',
+        ];
+        $methodName = null;
+        $encodedArgs = null;
+        $dimensionAccessor = null;
+        foreach ($methodAccessor as $candidate => $accessor) {
+            if (str_starts_with($variantIdentifier, $candidate)) {
+                $methodName = $candidate;
+                $encodedArgs = substr($variantIdentifier, strlen($candidate));
+                $dimensionAccessor = $accessor;
+                break;
+            }
+        }
+        if ($methodName === null) {
+            return null;
+        }
+
+        # Decode args — base64url encoded JSON array
+        $jsonArgs = base64_decode(strtr($encodedArgs, '-_', '+/'), true);
+        if ($jsonArgs === false) {
+            return null;
+        }
+        $args = json_decode($jsonArgs, true);
+        if (!is_array($args) || empty($args)) {
+            return null;
+        }
+
+        $targetDim = (int) $args[0];
+        if ($targetDim <= 0 || $targetDim > 16000) {
+            return null;
+        }
+
+        # Source must be an Image (or DBFile with image dimension accessors)
+        if (!method_exists($file, $dimensionAccessor)) {
+            return null;
+        }
+        $sourceDim = (int) $file->{$dimensionAccessor}();
+        if ($sourceDim === 0 || $sourceDim > $targetDim) {
+            return null; # actual resize would be needed — not a no-op
+        }
+
+        # Stream the original — by this point we know the requested variant
+        # would have been a byte-identical copy of the original.
+        return $file->getStream() ?: null;
     }
 
     /**
