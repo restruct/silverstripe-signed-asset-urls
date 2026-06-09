@@ -99,8 +99,14 @@ class SignedAssetUrlController extends Controller
             }
         }
 
+        // Disposition opt-in: ?d=att forces "attachment" (download). Default is "inline" for
+        // browser-viewable types (PDFs, images) so they can be embedded in <iframe>/<img>.
+        // Caller appends &d=att manually when a download prompt is desired — the signed URL
+        // builders intentionally don't pass this through.
+        $forceAttachment = $request->getVar('d') === 'att';
+
         // Serve the file (pass variantPath for variants, null for originals)
-        return $this->serveFile($file, $isVariant ? $assetPath : null, $expires, $signingService);
+        return $this->serveFile($file, $isVariant ? $assetPath : null, $expires, $signingService, $forceAttachment);
     }
 
     /**
@@ -168,7 +174,7 @@ class SignedAssetUrlController extends Controller
      * @param int $expires Expiry timestamp for cache headers
      * @param AssetUrlSigningService $signingService Signing service instance
      */
-    protected function serveFile(File $file, ?string $variantPath, int $expires, AssetUrlSigningService $signingService): HTTPResponse
+    protected function serveFile(File $file, ?string $variantPath, int $expires, AssetUrlSigningService $signingService, bool $forceAttachment = false): HTTPResponse
     {
         $displayFilename = $file->Name;
 
@@ -203,7 +209,8 @@ class SignedAssetUrlController extends Controller
                 $mimeType,
                 $displayFilename,
                 $expires,
-                $signingService
+                $signingService,
+                $forceAttachment
             );
             if ($response) {
                 return $response;
@@ -266,7 +273,7 @@ class SignedAssetUrlController extends Controller
             return $this->httpError(404, $variantPath ? 'Variant file not found' : 'File stream not available');
         }
 
-        return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService);
+        return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService, $forceAttachment);
     }
 
     /**
@@ -364,7 +371,8 @@ class SignedAssetUrlController extends Controller
         string $mimeType,
         string $displayFilename,
         int $expires,
-        AssetUrlSigningService $signingService
+        AssetUrlSigningService $signingService,
+        bool $forceAttachment = false
     ): HTTPResponse {
         $response = HTTPStreamResponse::create($stream, $fileSize);
         $response->setStatusCode(200);
@@ -376,16 +384,30 @@ class SignedAssetUrlController extends Controller
             $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
         }
 
-        // Set Content-Disposition for downloads (optional, based on file type)
+        // Content-Disposition. PDFs/images default to "inline" so they can render in
+        // <iframe>/<img>. ZIP/octet-stream always download (no inline use case). Callers
+        // can append ?d=att to any URL to force download — see serve().
         $safeFilename = str_replace(['"', '\\'], '', $displayFilename);
-        $downloadTypes = ['application/pdf', 'application/zip', 'application/octet-stream'];
-        if (in_array($mimeType, $downloadTypes)) {
-            $response->addHeader('Content-Disposition', 'attachment; filename="' . $safeFilename . '"');
-        } else {
-            $response->addHeader('Content-Disposition', 'inline; filename="' . $safeFilename . '"');
-        }
+        $disposition = $this->resolveDisposition($mimeType, $forceAttachment);
+        $response->addHeader('Content-Disposition', $disposition . '; filename="' . $safeFilename . '"');
 
         return $response;
+    }
+
+    /**
+     * Decide attachment vs inline disposition for a given mime type.
+     *
+     * - $forceAttachment (from ?d=att) always wins → "attachment"
+     * - ZIP/octet-stream → "attachment" (no inline rendering)
+     * - Everything else (including application/pdf, images) → "inline"
+     */
+    protected function resolveDisposition(string $mimeType, bool $forceAttachment): string
+    {
+        if ($forceAttachment) {
+            return 'attachment';
+        }
+        $alwaysDownload = ['application/zip', 'application/octet-stream'];
+        return in_array($mimeType, $alwaysDownload, true) ? 'attachment' : 'inline';
     }
 
     /**
@@ -463,7 +485,8 @@ class SignedAssetUrlController extends Controller
         string $mimeType,
         string $displayFilename,
         int $expires,
-        AssetUrlSigningService $signingService
+        AssetUrlSigningService $signingService,
+        bool $forceAttachment = false
     ): ?HTTPResponse {
         $fileServer = $signingService->getFileServer();
         $absolutePath = $resolved['absolutePath'];
@@ -479,14 +502,10 @@ class SignedAssetUrlController extends Controller
             $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
         }
 
-        // Content-Disposition
+        // Content-Disposition (see resolveDisposition() for policy)
         $safeFilename = str_replace(['"', '\\'], '', $displayFilename);
-        $downloadTypes = ['application/pdf', 'application/zip', 'application/octet-stream'];
-        if (in_array($mimeType, $downloadTypes)) {
-            $response->addHeader('Content-Disposition', 'attachment; filename="' . $safeFilename . '"');
-        } else {
-            $response->addHeader('Content-Disposition', 'inline; filename="' . $safeFilename . '"');
-        }
+        $disposition = $this->resolveDisposition($mimeType, $forceAttachment);
+        $response->addHeader('Content-Disposition', $disposition . '; filename="' . $safeFilename . '"');
 
         if ($fileServer === 'apache') {
             // Apache mod_xsendfile needs absolute path
