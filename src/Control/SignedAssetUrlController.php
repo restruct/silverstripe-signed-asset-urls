@@ -157,12 +157,29 @@ class SignedAssetUrlController extends Controller
 
         # Extract original filename by stripping variant suffix
         # "image__FillWzQwMCwyMjVd.jpg" → "image.jpg"
-        $originalName = preg_replace('/__[A-Za-z0-9+\/=]+\./', '.', $variantFilename);
+        # NB: the variant string may itself contain underscores — chained
+        # manipulations and ExtRewrite-based variants (eg asset_icons'
+        # "renderedpreview_ExtRewriteWyJwZGYiLCJwbmciXQ_FillWzMyMCwyNDBd")
+        # — so match everything up to the first dot, not a strict charset.
+        // $originalName = preg_replace('/__[A-Za-z0-9+\/=]+\./', '.', $variantFilename);  // old: broke on '_' in variant → 404
+        $originalName = preg_replace('/__[^.]+\./', '.', $variantFilename);
 
         # Filter by both hash and name to avoid returning wrong record when duplicates exist
-        return File::get()->filter([
+        $file = File::get()->filter([
             'FileHash:StartsWith' => $hashPrefix,
             'Name' => $originalName,
+        ])->first();
+        if ($file) {
+            return $file;
+        }
+
+        # ExtRewrite variants change the extension (eg PDF original → PNG
+        # renderedpreview), so the recovered name won't equal the original
+        # Name ("doc.png" vs "doc.pdf") — retry on basename with any extension
+        $baseName = pathinfo($originalName, PATHINFO_FILENAME);
+        return File::get()->filter([
+            'FileHash:StartsWith' => $hashPrefix,
+            'Name:StartsWith' => $baseName . '.',
         ])->first();
     }
 
