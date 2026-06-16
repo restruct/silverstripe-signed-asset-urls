@@ -105,8 +105,63 @@ class SignedAssetUrlController extends Controller
         // builders intentionally don't pass this through.
         $forceAttachment = $request->getVar('d') === 'att';
 
+        // Masked variant paths (x{idhex} in place of the filename) carry the
+        // File id, not the real on-disk name — rebuild the real variant path
+        // so the AssetStore can locate the file. (Signature was already
+        // validated against the masked path as received.)
+        $servePath = $assetPath;
+        if ($isVariant && $this->isMaskedVariantPath($assetPath)) {
+            $servePath = $this->reconstructRealVariantPath($file, $assetPath);
+        }
+
         // Serve the file (pass variantPath for variants, null for originals)
-        return $this->serveFile($file, $isVariant ? $assetPath : null, $expires, $signingService, $forceAttachment);
+        return $this->serveFile($file, $isVariant ? $servePath : null, $expires, $signingService, $forceAttachment);
+    }
+
+    /**
+     * Whether a variant path uses the masked-filename form (x{hex} stem),
+     * e.g. "abc123def0/x0000002a__FillWzQwMCwyMjVd.jpg".
+     */
+    protected function isMaskedVariantPath(string $path): bool
+    {
+        $parts = explode('/', $path, 2);
+        if (count($parts) < 2) {
+            return false;
+        }
+        $stem = preg_replace('/(__|\.).*$/', '', $parts[1]);
+        return (bool) preg_match('/^x[0-9a-f]+$/i', $stem);
+    }
+
+    /**
+     * Rebuild the real (on-disk) variant path for a masked path, using the
+     * resolved File's real name + hash but keeping the requested variant token.
+     * Returns "{realHashPrefix}/{realStem}__{variant}.{ext}" (serveFile prepends
+     * the folder from the File's filename).
+     */
+    protected function reconstructRealVariantPath(File $file, string $maskedVariantPath): string
+    {
+        $parts = explode('/', $maskedVariantPath, 2);
+        $maskedFilename = $parts[1] ?? '';
+
+        // SS injects the variant after the FIRST dot of the name and keeps the
+        // rest as the suffix, e.g. "Shot-17.28.11.png" -> "Shot-17__{variant}.28.11.png".
+        // Rebuild that exact name from the File's real Name + the variant token
+        // carried in the masked filename.
+        $name = (string) $file->Name;
+        $firstDot = strpos($name, '.');
+        $stem   = $firstDot !== false ? substr($name, 0, $firstDot) : $name;
+        $suffix = $firstDot !== false ? substr($name, $firstDot) : '';
+
+        $sep = strpos($maskedFilename, '__');
+        if ($sep !== false) {
+            $afterSep = substr($maskedFilename, $sep + 2);   // "{variant}.ext"
+            $dot = strpos($afterSep, '.');
+            $variantToken = $dot !== false ? substr($afterSep, 0, $dot) : $afterSep;
+            $realFilename = $stem . '__' . $variantToken . $suffix;
+        } else {
+            $realFilename = $name; // original (no variant)
+        }
+        return substr($file->getHash(), 0, 10) . '/' . $realFilename;
     }
 
     /**
@@ -154,6 +209,18 @@ class SignedAssetUrlController extends Controller
 
         $hashPrefix = $parts[0];
         $variantFilename = $parts[1]; # e.g. "image__FillWzQwMCwyMjVd.jpg"
+
+        # Masked form (x{idhex} stem): resolve by File id, not by name. The
+        # cross-check that the loaded File's hash starts with the URL's hash
+        # prefix disambiguates a real file coincidentally named "x{hex}" (which
+        # then falls through to normal name resolution below).
+        $stem = preg_replace('/(__|\.).*$/', '', $variantFilename);
+        if (preg_match('/^x([0-9a-f]+)$/i', $stem, $m)) {
+            $byId = File::get()->byID((int) hexdec($m[1]));
+            if ($byId && stripos($byId->getHash() ?? '', $hashPrefix) === 0) {
+                return $byId;
+            }
+        }
 
         # Extract original filename by stripping variant suffix
         # "image__FillWzQwMCwyMjVd.jpg" → "image.jpg"

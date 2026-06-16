@@ -115,8 +115,16 @@ class SignedUrlDBFileExtension extends Extension
      */
     public function AutoURL(string|int|null $policyOrTtl = null, ?bool $bindToSession = null): ?string
     {
-        $ttl = null;
+        [$ttl, $bindToSession] = $this->resolvePolicy($policyOrTtl, $bindToSession);
+        return $this->SignedURL($ttl, $bindToSession);
+    }
 
+    /**
+     * Resolve a policy name (or raw TTL) to [ttl, bindToSession].
+     */
+    protected function resolvePolicy(string|int|null $policyOrTtl, ?bool $bindToSession): array
+    {
+        $ttl = null;
         if (is_string($policyOrTtl)) {
             $policies = AssetUrlSigningService::config()->get('policies');
             if (isset($policies[$policyOrTtl])) {
@@ -126,8 +134,65 @@ class SignedUrlDBFileExtension extends Extension
         } elseif (is_int($policyOrTtl)) {
             $ttl = $policyOrTtl;
         }
+        return [$ttl, $bindToSession];
+    }
 
-        return $this->SignedURL($ttl, $bindToSession);
+    /**
+     * Signed URL with the filename masked as the File's id (hex).
+     *
+     * Identical to AutoURL except the filename stem in the URL path is
+     * replaced with "x{zero-padded-hex-id}" (e.g. "x0000002a") — the
+     * content-hash prefix and variant token are kept, so the correct file and
+     * size still resolve, but a (potentially answer-revealing) filename is no
+     * longer exposed. Used for question option-images.
+     *
+     * Always produces a signed (controller-served) URL, since masking requires
+     * routing through SignedAssetUrlController which decodes the id.
+     *
+     * @param int $fileID The File record id to encode (the caller knows it;
+     *                     a DBFile variant doesn't carry the id itself).
+     */
+    public function MaskedURL(int $fileID, string|int|null $policyOrTtl = null, ?bool $bindToSession = null): ?string
+    {
+        /** @var DBFile $dbFile */
+        $dbFile = $this->getOwner();
+        if (empty($dbFile->getFilename()) || empty($dbFile->getHash()) || $fileID <= 0) {
+            return null;
+        }
+
+        [$ttl, $bindToSession] = $this->resolvePolicy($policyOrTtl, $bindToSession);
+
+        $path = $this->buildAssetPath();
+        if (!$path) {
+            return null;
+        }
+
+        // Rebuild the last segment as a canonical "x{idhex}__{variant}.{ext}"
+        // dropping ALL of the original filename (incl. multi-dot fragments like
+        // a "...17.28.11.png" timestamp). SS injects the variant after the
+        // FIRST dot of the name, so the real segment looks like
+        // "stem__Variant.suffix.ext"; we keep only the variant token + the
+        // final extension. The controller reconstructs the real on-disk name
+        // from the File record (see reconstructRealVariantPath).
+        $segments = explode('/', $path);
+        $last = array_pop($segments);
+        $token = 'x' . sprintf('%08x', $fileID);
+        $ext = pathinfo($last, PATHINFO_EXTENSION);
+        $sep = strpos($last, '__');
+        if ($sep !== false) {
+            $afterSep = substr($last, $sep + 2);            // "Variant.suffix.ext"
+            $dot = strpos($afterSep, '.');
+            $variantToken = $dot !== false ? substr($afterSep, 0, $dot) : $afterSep;
+            $last = $token . '__' . $variantToken . ($ext !== '' ? '.' . $ext : '');
+        } else {
+            $last = $token . ($ext !== '' ? '.' . $ext : '');
+        }
+        $segments[] = $last;
+        $maskedPath = implode('/', $segments);
+
+        /** @var AssetUrlSigningService $signingService */
+        $signingService = Injector::inst()->get(AssetUrlSigningService::class);
+        return $signingService->generateSignedURL($maskedPath, $ttl, $bindToSession);
     }
 
     /**
