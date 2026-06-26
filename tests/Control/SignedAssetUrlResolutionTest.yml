@@ -11,3 +11,22 @@ SilverStripe\Assets\File:
     Name: Shot-17.28.11.png
     FileFilename: uploads/Shot-17.28.11.png
     FileHash: abcdef0123456789abcdef0123456789abcdef01
+  # Two records sharing a hash (re-imported image) — Name disambiguates.
+  dup1:
+    Name: photo.jpg
+    FileFilename: uploads/photo.jpg
+    FileHash: ab12cd34ef0000000000000000000000000000aa
+  dup2:
+    Name: photo-copy.jpg
+    FileFilename: uploads/photo-copy.jpg
+    FileHash: ab12cd34ef0000000000000000000000000000aa
+  # Chained-manipulation variant (underscores inside the variant token).
+  chained:
+    Name: banner.jpg
+    FileFilename: uploads/banner.jpg
+    FileHash: cc11cc11cc0000000000000000000000000000bb
+  # ExtRewrite: PDF whose variant is a PNG preview (recovered name != real ext).
+  extrewrite:
+    Name: report.pdf
+    FileFilename: uploads/report.pdf
+    FileHash: ee22ee22ee0000000000000000000000000000cc

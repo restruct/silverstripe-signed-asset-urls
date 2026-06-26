@@ -103,6 +103,64 @@ class SignedAssetUrlResolutionTest extends SapphireTest
         // SS injects the variant after the FIRST dot, keeping the rest as suffix.
         $this->assertSame($hash10 . '/Shot-17__ScaleWidthWzE4MF0.28.11.png', $real);
     }
+
+    // -------------------------------------------------------------------------
+    // findFileByVariantPath edge cases
+    // -------------------------------------------------------------------------
+    public function testVariantPathResolvesByHashAndName(): void
+    {
+        $file = $this->objFromFixture(File::class, 'dup1'); // hash ab12cd34ef…, Name photo.jpg
+        $resolved = $this->ctrl()->pub_findFileByVariantPath('ab12cd34ef/photo__FillWzEwMF0.jpg');
+        $this->assertNotNull($resolved);
+        $this->assertSame((int) $file->ID, (int) $resolved->ID, 'resolves the record matching Name, not the duplicate-hash sibling');
+    }
+
+    public function testDuplicateHashDisambiguatesByName(): void
+    {
+        $dup2 = $this->objFromFixture(File::class, 'dup2'); // same hash, Name photo-copy.jpg
+        $resolved = $this->ctrl()->pub_findFileByVariantPath('ab12cd34ef/photo-copy__FillWzEwMF0.jpg');
+        $this->assertSame((int) $dup2->ID, (int) $resolved->ID, 'same hash, different name -> correct record');
+    }
+
+    public function testChainedManipulationVariantResolves(): void
+    {
+        // Variant token itself contains underscores (chained manipulations).
+        $file = $this->objFromFixture(File::class, 'chained'); // banner.jpg
+        $resolved = $this->ctrl()->pub_findFileByVariantPath('cc11cc11cc/banner__FillWzEwMF0_ScaleWidthWzUwXQ.jpg');
+        $this->assertNotNull($resolved, 'chained variant token must still recover the original name');
+        $this->assertSame((int) $file->ID, (int) $resolved->ID);
+    }
+
+    public function testExtRewriteVariantResolvesViaBasenameFallback(): void
+    {
+        // PDF whose variant is a PNG preview: recovered name "report.png" != "report.pdf",
+        // so resolution falls back to a basename (any-extension) match.
+        $file = $this->objFromFixture(File::class, 'extrewrite'); // report.pdf
+        $resolved = $this->ctrl()->pub_findFileByVariantPath('ee22ee22ee/report__ExtRewriteWyJwZGYiLCJwbmciXQ_FillWzMyMF0.png');
+        $this->assertNotNull($resolved, 'ExtRewrite variant must resolve via basename fallback');
+        $this->assertSame((int) $file->ID, (int) $resolved->ID);
+    }
+
+    // -------------------------------------------------------------------------
+    // MIME + disposition
+    // -------------------------------------------------------------------------
+    public function testMimeTypeFromExtension(): void
+    {
+        $c = $this->ctrl();
+        $this->assertSame('image/png', $c->pub_getMimeTypeFromExtension('png'));
+        $this->assertSame('application/pdf', $c->pub_getMimeTypeFromExtension('pdf'));
+        $this->assertSame('image/jpeg', $c->pub_getMimeTypeFromExtension('jpg'));
+        $this->assertSame('application/octet-stream', $c->pub_getMimeTypeFromExtension('xyzunknown'));
+    }
+
+    public function testDisposition(): void
+    {
+        $c = $this->ctrl();
+        $this->assertStringContainsString('inline', $c->pub_resolveDisposition('application/pdf', false), 'pdf inline by default');
+        $this->assertStringContainsString('inline', $c->pub_resolveDisposition('image/png', false), 'image inline by default');
+        $this->assertStringContainsString('attachment', $c->pub_resolveDisposition('application/pdf', true), 'forced attachment');
+        $this->assertStringContainsString('attachment', $c->pub_resolveDisposition('application/zip', false), 'non-viewable -> attachment');
+    }
 }
 
 /**
@@ -128,5 +186,25 @@ class TestableSignedAssetUrlController extends SignedAssetUrlController
     public function pub_reconstructRealVariantPath(File $f, string $p): string
     {
         return $this->reconstructRealVariantPath($f, $p);
+    }
+
+    public function pub_findFileByVariantPath(string $p): ?File
+    {
+        return $this->findFileByVariantPath($p);
+    }
+
+    public function pub_getMimeTypeFromExtension(string $ext): string
+    {
+        return $this->getMimeTypeFromExtension($ext);
+    }
+
+    public function pub_resolveDisposition(string $mime, bool $forceAttachment): string
+    {
+        return $this->resolveDisposition($mime, $forceAttachment);
+    }
+
+    public function pub_tryServeOriginalForNoOpVariant(File $file, string $variantId)
+    {
+        return $this->tryServeOriginalForNoOpVariant($file, $variantId);
     }
 }
