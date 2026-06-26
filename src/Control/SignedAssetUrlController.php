@@ -82,10 +82,19 @@ class SignedAssetUrlController extends Controller
         // Original paths look like: Uploads/image.jpg
         $isVariant = $this->isVariantPath($assetPath);
 
-        // Find the original File record
-        $file = $isVariant
-            ? $this->findFileByVariantPath($assetPath)
-            : File::get()->filter('FileFilename', $assetPath)->first();
+        // Find the original File record.
+        if ($isVariant) {
+            $file = $this->findFileByVariantPath($assetPath);
+        } else {
+            // A masked ORIGINAL path ("{folder}/x{idhex}.{ext}") carries the File
+            // id in place of the real name — produced when ScaleWidth()/etc.
+            // returns the original unchanged (source <= target, so no variant).
+            // The variant branch only de-masks hash-prefixed variant paths, so
+            // resolve the masked original by its embedded id here; fall back to a
+            // real filename lookup for genuinely-unmasked originals.
+            $file = $this->findFileByMaskedOriginalPath($assetPath)
+                ?? File::get()->filter('FileFilename', $assetPath)->first();
+        }
 
         if (!$file) {
             return $this->httpError(404, 'File not found');
@@ -187,6 +196,41 @@ class SignedAssetUrlController extends Controller
         }
 
         return false;
+    }
+
+    /**
+     * Resolve a masked ORIGINAL path ("{folder}/x{idhex}.{ext}") to its File by
+     * the embedded id. Cross-checks the resolved File's real folder + extension
+     * against the URL so a real file coincidentally named "x{hex}.ext" isn't
+     * mis-resolved (the signature is already validated; this is correctness).
+     * Returns null when the path isn't a masked original or doesn't match.
+     */
+    protected function findFileByMaskedOriginalPath(string $path): ?File
+    {
+        $segments = explode('/', $path);
+        $last = array_pop($segments);
+        $urlFolder = implode('/', $segments);
+        $ext = pathinfo($last, PATHINFO_EXTENSION);
+        $stem = preg_replace('/\..*$/', '', $last);
+        if (!preg_match('/^x([0-9a-f]+)$/i', $stem, $m)) {
+            return null;
+        }
+        $file = File::get()->byID((int) hexdec($m[1]));
+        if (!$file || empty($file->getFilename())) {
+            return null;
+        }
+        $realName = (string) $file->getFilename();   // "folder/name.ext"
+        $realFolder = dirname($realName);
+        if ($realFolder === '.') {
+            $realFolder = '';
+        }
+        if ($realFolder !== $urlFolder) {
+            return null;
+        }
+        if (strcasecmp((string) pathinfo($realName, PATHINFO_EXTENSION), (string) $ext) !== 0) {
+            return null;
+        }
+        return $file;
     }
 
     /**

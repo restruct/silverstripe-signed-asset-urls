@@ -1,0 +1,13 @@
+SilverStripe\Assets\File:
+  skylift:
+    Name: skylift.png
+    FileFilename: test-thumbnails/skylift.png
+    FileHash: 0123456789abcdef0123456789abcdef01234567
+  rootfile:
+    Name: root.png
+    FileFilename: root.png
+    FileHash: 1111111111111111111111111111111111111111
+  multidot:
+    Name: Shot-17.28.11.png
+    FileFilename: uploads/Shot-17.28.11.png
+    FileHash: abcdef0123456789abcdef0123456789abcdef01
