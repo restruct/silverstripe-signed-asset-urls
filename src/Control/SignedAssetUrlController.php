@@ -313,11 +313,14 @@ class SignedAssetUrlController extends Controller
             // Build full relative path: folder/hashprefix/filename__variant.ext
             $dirname = dirname($file->getFilename());
             $relativePath = ($dirname !== '.' ? $dirname . '/' : '') . $variantPath;
-            // For variants, resolve via the signing service (known layout)
+            // For variants, resolve via the signing service (known layout).
+            // getAbsoluteFilePath() looks under the protected folder, so a resolved
+            // variant is by definition protected (nginx X-Accel-safe).
             $absolutePath = $signingService->getAbsoluteFilePath($relativePath);
             $resolved = $absolutePath ? [
                 'absolutePath' => $absolutePath,
                 'relativePath' => $relativePath,
+                'isProtected' => true,
             ] : null;
         } else {
             if (!$file->exists()) {
@@ -589,6 +592,10 @@ class SignedAssetUrlController extends Controller
                         return [
                             'absolutePath' => $absolutePath,
                             'relativePath' => $fileID,
+                            // Which store the file was found in — nginx can only
+                            // X-Accel-Redirect protected files (the `internal`
+                            // location); public files must be PHP-streamed.
+                            'isProtected' => ($type === 'Protected'),
                         ];
                     }
                 }
@@ -643,6 +650,13 @@ class SignedAssetUrlController extends Controller
                 $response->addHeader('Content-Length', (string) $fileSize);
             }
         } elseif ($fileServer === 'nginx') {
+            // X-Accel-Redirect can only serve files under the protected `internal`
+            // nginx location. A PUBLIC file behind a masked/signed URL (eg a reused
+            // public image) lives outside it and has no internal location, so hand
+            // off to PHP streaming instead — otherwise nginx 404s the redirect.
+            if (!($resolved['isProtected'] ?? true)) {
+                return null;
+            }
             // Nginx X-Accel-Redirect needs internal location + relative path
             $internalLocation = $signingService->getNginxInternalLocation();
             $internalPath = rtrim($internalLocation, '/') . '/' . ltrim($relativePath, '/');

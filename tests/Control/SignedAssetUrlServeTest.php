@@ -191,4 +191,38 @@ class SignedAssetUrlServeTest extends FunctionalTest
         $ctrl = new TestableSignedAssetUrlController();
         $this->assertNull($ctrl->pub_tryServeOriginalForNoOpVariant($img, $this->variantId('ScaleWidth', [99999])));
     }
+
+    // -------------------------------------------------------------------------
+    // nginx X-Accel handoff: protected -> X-Accel; PUBLIC -> PHP stream.
+    // (Regression for the prod 404: a public masked-original X-Accel'd into the
+    // protected-only internal location returned 404 under nginx.)
+    // -------------------------------------------------------------------------
+    public function testNginxProtectedFileUsesXAccelRedirect(): void
+    {
+        Environment::setEnv('ASSET_FILE_SERVER', 'nginx');
+        try {
+            $img = $this->makeImage('serve/nginx-protected.png', 200, 100, 'LoggedInUsers');
+            $resp = $this->get((string) $img->AutoURL('m'));
+            $this->assertSame(200, $resp->getStatusCode());
+            $this->assertNotEmpty($resp->getHeader('X-Accel-Redirect'), 'protected file -> nginx X-Accel');
+        } finally {
+            Environment::setEnv('ASSET_FILE_SERVER', 'php');
+        }
+    }
+
+    public function testNginxPublicMaskedOriginalStreamsNotXAccel(): void
+    {
+        Environment::setEnv('ASSET_FILE_SERVER', 'nginx');
+        try {
+            $img = $this->makeImage('serve/nginx-public.png', 400, 240, 'Anyone');
+            $url = (string) $img->MaskedScaleWidthURL(180, 'm'); // masked original (public)
+            $this->assertStringNotContainsString('__', $this->decodedPath($url), 'precondition: masked original');
+            $resp = $this->get($url);
+            $this->assertSame(200, $resp->getStatusCode(), 'public masked original must serve under nginx (the fix)');
+            $this->assertEmpty($resp->getHeader('X-Accel-Redirect'), 'public file must be streamed, not X-Accel into the protected location');
+            $this->assertNotEmpty($resp->getBody(), 'streamed body present');
+        } finally {
+            Environment::setEnv('ASSET_FILE_SERVER', 'php');
+        }
+    }
 }
