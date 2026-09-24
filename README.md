@@ -369,6 +369,8 @@ Usage:
 
 A policy name that is not configured falls back to the default TTL **without** session binding,
 and logs a warning naming the unknown policy (from 1.2.0; earlier versions fell back silently).
+The warning goes to the `Psr\Log\LoggerInterface` service, which Silverstripe ships without a
+handler: attach one in your project to see it.
 
 ## URL Formats
 

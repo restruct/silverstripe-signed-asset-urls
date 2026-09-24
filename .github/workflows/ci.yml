@@ -188,11 +188,11 @@ jobs:
         #   explicit test path - `--testsuite x flush=1` makes PHPUnit 9 open "flush=1" as a file
         #   and fail. So the SS5 legs run by path; phpunit.xml still supplies bootstrap and
         #   failOnWarning.
+        # - SS6 (framework 6, PHPUnit 11): a `flush=1` argument no longer works; framework 6 reads
+        #   SS_PHPUNIT_FLUSH instead, which also combines with --testsuite.
         # --fail-on-empty-test-suite on every call: a path or suite that resolves to no tests (eg a
         # mirrored install without /tests) fails the leg instead of passing it. PHPUnit 9.6 accepts
         # the flag although its --help does not list it.
-        # - SS6 (framework 6, PHPUnit 11): a `flush=1` argument no longer works; framework 6 reads
-        #   SS_PHPUNIT_FLUSH instead, which also combines with --testsuite.
         run: |
           if [ "${{ matrix.silverstripe }}" = "5" ]; then
             vendor/bin/phpunit --fail-on-empty-test-suite vendor/restruct/silverstripe-signed-asset-urls/tests flush=1

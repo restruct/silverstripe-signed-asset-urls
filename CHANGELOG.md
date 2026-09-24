@@ -35,8 +35,9 @@ methods are the same as in 1.1.9. See [UPGRADING.md](UPGRADING.md).
 ### Changed (behaviour)
 
 - An unknown policy name in `AutoURL()` / `MaskedURL()` / `MaskedScaleWidthURL()` now logs a
-  warning (via the `Psr\Log\LoggerInterface` service). The URL it returns is unchanged: default
-  TTL, not session-bound. Turning an unknown name into an error is left for a major version.
+  warning (via the `Psr\Log\LoggerInterface` service). Silverstripe ships that service without a
+  handler, so the warning only shows up if your project attaches one. The URL it returns is
+  unchanged: default TTL, not session-bound. Turning an unknown name into an error is left for a major version.
 
 ### Documentation
 
@@ -49,9 +50,10 @@ methods are the same as in 1.1.9. See [UPGRADING.md](UPGRADING.md).
 
 ### Tests and CI
 
-- The suite (59 tests in 1.1.9) gains tests for the verify task (including its exit code) on both
-  majors, a regression test for the unversioned-file fix, a test of the published-status check
-  against staged (draft/live) File, and a test for the unknown-policy warning. It runs on
+- The suite (59 tests in 1.1.9) gains tests for the verify task on both majors (including that
+  each failing check makes it report a failure, and on 6 exit non-zero), a regression test for the
+  unversioned-file fix, a test of the published-status check against staged (draft/live) File,
+  and a test for the unknown-policy warning. It runs on
   Silverstripe 5 and 6 in GitHub Actions, with a consumer-shape database test, a `dev/build` and a
   run of the verify task; a run that finds no tests fails.
 - `phpunit.xml.dist` is now for running from a host project (see README); its coverage block,

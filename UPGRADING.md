@@ -24,7 +24,9 @@ A `~1.1.9` constraint does not allow 1.2; widen it as above.
 The README's caching examples used `AutoURL('md')` and `AutoURL('md_sess')`. Neither policy
 exists: both give a URL with the default TTL and **no** session binding. If you copied them, use
 `AutoURL('m')` (1 hour) or `AutoURL('ms')` (1 hour, session-bound). From 1.2.0 an unknown policy
-name logs a warning, so your error log shows any that are left.
+name logs a warning to the `Psr\Log\LoggerInterface` service, so your error log shows any that
+are left - provided your project attaches a log handler to that service. Silverstripe ships it
+without one, and a warning logged with no handler attached goes nowhere.
 
 ### Scripts that run the verify task
 
