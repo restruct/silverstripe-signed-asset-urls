@@ -66,9 +66,15 @@ class SignedAssetUrlVerifyTask extends BuildTask
      * point writes to PolyOutput, which renders for the terminal or the browser itself.
      *
      * @param callable $write function (string $message, bool $newline = true): void
+     * @return bool false when any check reported FAILED/FAIL/ERROR. The SS6 entry point turns
+     *              that into a non-zero exit code, so a deploy hook or cron can act on it; SS5's
+     *              BuildTask::run() has no exit-code channel, so there it is only the output.
      */
-    public function verify(callable $write): void
+    public function verify(callable $write): bool
     {
+        // Set to false by every check that reports a failure; returned at the end.
+        $ok = true;
+
         // Keeps the body below unchanged: it was written against $output($message, $newline).
         $output = function (string $message, bool $newline = true) use ($write): void {
             $write($message, $newline);
@@ -91,7 +97,8 @@ class SignedAssetUrlVerifyTask extends BuildTask
             $output("   Error: " . $e->getMessage());
             $output("   Add ASSET_SIGNING_SECRET to your .env file");
             $output("");
-            return;
+            // Every later check needs the secret, so stop here - as a failure.
+            return false;
         }
 
         // 2. Show protected folder path
@@ -138,16 +145,20 @@ class SignedAssetUrlVerifyTask extends BuildTask
             // Valid signature
             $result = $service->validateSignature($hash, $expires, rawurldecode($urlPath), $sessionBound);
             $output("Valid signature: " . ($result === true ? "PASS" : "FAIL (" . $result . ")"));
+            $ok = $ok && $result === true;
 
             // Wrong hash
             $badResult = $service->validateSignature('wronghash1234567', $expires, rawurldecode($urlPath), $sessionBound);
             $output("Wrong hash (expect invalid): " . ($badResult === 'invalid_signature' ? "PASS" : "FAIL"));
+            $ok = $ok && $badResult === 'invalid_signature';
 
             // Expired URL
             $expiredResult = $service->validateSignature($hash, time() - 1, rawurldecode($urlPath), $sessionBound);
             $output("Expired URL (expect expired): " . ($expiredResult === 'expired' ? "PASS" : "FAIL"));
+            $ok = $ok && $expiredResult === 'expired';
         } else {
             $output("ERROR: Could not parse signed URL format");
+            $ok = false;
         }
 
         // 6. Test session-bound URL
@@ -157,6 +168,7 @@ class SignedAssetUrlVerifyTask extends BuildTask
         $output("Session-bound URL: " . $sessionUrl);
         $hasSessionFlag = str_contains($sessionUrl, 'ss=1');
         $output("Contains session flag (ss=1): " . ($hasSessionFlag ? "PASS" : "FAIL"));
+        $ok = $ok && $hasSessionFlag;
 
         // 7. Show file server configuration
         $output("");
@@ -190,6 +202,8 @@ class SignedAssetUrlVerifyTask extends BuildTask
 
         $output("");
         $output("=== Verification Complete ===");
+
+        return $ok;
     }
 
     /**

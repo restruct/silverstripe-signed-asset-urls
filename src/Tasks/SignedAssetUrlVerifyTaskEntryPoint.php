@@ -46,14 +46,17 @@ if (class_exists(PolyOutput::class)) {
 
         protected function execute(InputInterface $input, PolyOutput $output): int
         {
-            $this->verify(function (string $message, bool $newline = true) use ($output): void {
+            $ok = $this->verify(function (string $message, bool $newline = true) use ($output): void {
                 // PolyOutput renders line endings for the terminal and for HTML itself.
                 // OUTPUT_RAW: messages are plain text and carry no console formatting tags, so
                 // nothing in them (eg a path in angle brackets) is mistaken for one.
                 $output->write($message, $newline, PolyOutput::OUTPUT_RAW);
             });
 
-            return Command::SUCCESS;
+            // Was `return Command::SUCCESS;` unconditionally: a missing secret printed FAILED yet
+            // exited 0 ("completed successfully"), so `sake tasks:SignedAssetUrlVerifyTask || alert`
+            // never alerted. SS6 BuildTask::run() returns what execute() returns.
+            return $ok ? Command::SUCCESS : Command::FAILURE;
         }
     }
 } else {
@@ -79,6 +82,8 @@ if (class_exists(PolyOutput::class)) {
          */
         public function run($request)
         {
+            // The result is not returned: SS5's task runner ignores run()'s return value, so the
+            // printed FAILED/FAIL lines are the only signal on this major.
             $this->verify(function (string $message, bool $newline = true): void {
                 $this->output($message, $newline);
             });
