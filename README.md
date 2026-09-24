@@ -747,14 +747,15 @@ vendor/bin/phpunit vendor/restruct/silverstripe-signed-asset-urls/tests flush=1
 ```
 
 Most of the suite assumes files are versioned **without** draft/live staging (see "Projects with
-staging disabled" below), so the host needs that configuration; on a stock staged install nine
+staging disabled" above), so the host needs that configuration; on a stock staged install nine
 tests fail because the files they create are never published. `.github/workflows/ci.yml` builds
 such a host for every supported Silverstripe major.
 
 #### What is NOT covered by automated tests
 
-- The X-Sendfile and X-Accel-Redirect handoffs are only checked as far as the response header:
-  whether Apache or nginx then serves the file depends on the server config above.
+- The nginx X-Accel-Redirect handoff is checked only as far as the response header: whether nginx
+  then serves the file depends on the server config above. The Apache X-Sendfile branch has no
+  test.
 - Session-bound URLs are tested with an injected session token; the real one is empty under the
   test runner.
 
