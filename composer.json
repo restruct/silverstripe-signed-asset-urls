@@ -26,6 +26,9 @@
             "Restruct\\SilverStripe\\SignedAssetUrls\\Tests\\": "tests/"
         }
     },
+    "suggest": {
+        "silverstripe/versioned": "^2 || ^3 - draft/live staging for File; signed URLs then refuse unpublished files. Without it every file counts as published"
+    },
     "require-dev": {
         "silverstripe/recipe-testing": "^3 || ^4"
     },

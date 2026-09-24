@@ -6,4 +6,5 @@
 /.gitattributes   export-ignore
 /.gitignore       export-ignore
 /phpunit.xml.dist export-ignore
-/UPGRADING.md     export-ignore
+# UPGRADING.md ships: README.md and CHANGELOG.md (both shipped) link to it.
+#/UPGRADING.md     export-ignore
