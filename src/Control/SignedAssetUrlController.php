@@ -12,6 +12,7 @@ use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Control\HTTPStreamResponse;
 use SilverStripe\Core\Injector\Injector;
+use SilverStripe\Versioned\Versioned;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 
 /**
@@ -102,8 +103,14 @@ class SignedAssetUrlController extends Controller
 
         // Check if file is published (respects SilverStripe's protected assets system)
         // Versioned::isPublished() handles both staging and versioning-only modes
+        // isPublished() only exists when File has the Versioned extension: silverstripe/versioned
+        // is not a dependency of silverstripe/assets (nor of recipe-core), and without it this
+        // call threw "method 'isPublished' does not exist" for every signed URL served under the
+        // default config (check_published_status: true). With no versioning there is no draft
+        // state, so every file counts as published - the same guard requiresSignedURL() in
+        // SignedUrlDBFileExtension already applies.
         if ($signingService->shouldCheckPublishedStatus() && !$signingService->canBypassSigning()) {
-            if (!$file->isPublished()) {
+            if ($file->hasExtension(Versioned::class) && !$file->isPublished()) {
                 return $this->httpError(403, 'File not available');
             }
         }
