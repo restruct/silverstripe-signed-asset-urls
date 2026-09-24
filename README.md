@@ -1,5 +1,8 @@
 # Signed Protected Asset URLs for SilverStripe
 
+*Maintained by [Restruct](https://github.com/restruct). If this module saves you time, you can
+[support ongoing maintenance](https://github.com/sponsors/restruct).*
+
 Time-expiring signed URLs for protected SilverStripe assets, similar to Amazon S3 pre-signed URLs.
 
 ## Features
@@ -11,6 +14,31 @@ Time-expiring signed URLs for protected SilverStripe assets, similar to Amazon S
 - **Configurable TTL**: Default and per-URL time-to-live settings
 - **SilverStripe integration**: Uses SilverStripe's AssetStore for file resolution (works with hash-based paths)
 
+## Version Compatibility
+
+| Branch | Module version | Silverstripe | PHP |
+|--------|----------------|--------------|-----|
+| `main` | `1.2.x` | 5, 6 | 8.1+ (8.3+ on Silverstripe 6) |
+| - (tags only) | `1.0` - `1.1.x` | 5 | 8.1+ |
+
+`composer.json` is the source of truth for exact constraints. See [CHANGELOG.md](CHANGELOG.md) and,
+when upgrading from 1.1, [UPGRADING.md](UPGRADING.md).
+
+## Requirements and installation
+
+- Silverstripe 5 or 6 (`silverstripe/framework` and `silverstripe/assets`), PHP 8.1+
+- Optional: `silverstripe/versioned` (installed with `silverstripe/recipe-cms`). Without it files
+  have no draft state, so only their view permissions decide whether a URL is signed.
+- Local filesystem asset storage. Remote storage (S3 and similar) should use that provider's own
+  pre-signed URLs instead.
+
+```bash
+composer require restruct/silverstripe-signed-asset-urls
+```
+
+Then set `ASSET_SIGNING_SECRET` (below) and flush (`sake dev/build flush=1` on Silverstripe 5,
+`sake db:build --flush` on 6). The module adds no database tables.
+
 ## Configuration
 
 ### Environment Variables
@@ -21,6 +49,18 @@ Add to your `.env` file:
 # Required: Secret key for signing URLs (use a long random string)
 ASSET_SIGNING_SECRET="your-secret-key-min-32-characters-recommended"
 ```
+
+Any long random string will do. To generate one:
+
+```bash
+openssl rand -hex 32
+```
+
+Silverstripe's own token generator works too, and prints a 40-character token:
+`vendor/bin/sake generatesecuretoken` on Silverstripe 6, `vendor/bin/sake dev/generatesecuretoken`
+on 5. On 5 it wraps the token in a `Security: token:` YAML snippet; copy only the token into
+`ASSET_SIGNING_SECRET`. Use a secret of its own for this module rather than reusing another one:
+changing it invalidates every signed URL already handed out, and nothing else.
 
 ### SilverStripe Config
 
@@ -76,7 +116,8 @@ ASSET_FILE_SERVER=php
 
 3. Run the verification task to confirm your setup:
    ```bash
-   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
+   vendor/bin/sake tasks:SignedAssetUrlVerifyTask        # Silverstripe 6
+   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask    # Silverstripe 5
    ```
 
 #### How the location path is determined
@@ -204,7 +245,8 @@ This makes the location only respond to `X-Accel-Redirect` headers from PHP. Dir
 
 4. Run the verification task to get your exact configuration:
    ```bash
-   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
+   vendor/bin/sake tasks:SignedAssetUrlVerifyTask        # Silverstripe 6
+   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask    # Silverstripe 5
    ```
 
 **How it works**: PHP validates the signed URL, then sends an `X-Sendfile` header with the absolute file path. Apache serves the file directly, bypassing PHP for the actual file transfer.
@@ -325,6 +367,11 @@ Usage:
 <img src="$PreviewImage.AutoURL('preview')">
 ```
 
+A policy name that is not configured falls back to the default TTL **without** session binding,
+and logs a warning naming the unknown policy (from 1.2.0; earlier versions fell back silently).
+The warning goes to the `Psr\Log\LoggerInterface` service, which Silverstripe ships without a
+handler: attach one in your project to see it.
+
 ## URL Formats
 
 Generated URLs use S3-style query parameters for clean, readable paths:
@@ -436,7 +483,7 @@ If your cache lives longer than the signed URL's TTL, users will get expired lin
 ```html
 <%-- Cache expires before signed URL does --%>
 <% cached 'document', $Document.ID, 1800 %>
-    <a href="$Document.AutoURL('md')">Download</a>
+    <a href="$Document.AutoURL('m')">Download</a>
 <% end_cached %>
 ```
 
@@ -461,7 +508,7 @@ If your cache lives longer than the signed URL's TTL, users will get expired lin
 
 <% uncached %>
     <%-- Session-bound URLs should never be cached anyway --%>
-    <a href="$Document.AutoURL('md_sess')">Download</a>
+    <a href="$Document.AutoURL('ms')">Download</a>
 <% end_uncached %>
 ```
 
@@ -490,12 +537,12 @@ public function SignedURLCacheWindow(int $windowSeconds = 3600): string
 ```html
 <%-- BAD: Will serve one user's session-bound URL to everyone --%>
 <% cached 'document' %>
-    <a href="$Document.AutoURL('md_sess')">Download</a>
+    <a href="$Document.AutoURL('ms')">Download</a>
 <% end_cached %>
 
 <%-- GOOD: Always uncached --%>
 <% uncached %>
-    <a href="$Document.AutoURL('md_sess')">Download</a>
+    <a href="$Document.AutoURL('ms')">Download</a>
 <% end_uncached %>
 ```
 
@@ -557,6 +604,19 @@ SilverStripe\Assets\File:
     versioned: SilverStripe\Versioned\Versioned.versioned
 ```
 
+Or, in YAML alone: replace the `Versioned` entry that `silverstripe/versioned` adds (same key)
+with the versioning-only form:
+
+```yaml
+---
+Name: app-file-versioning-only
+After: '#versionedfiles'
+---
+SilverStripe\Assets\File:
+  extensions:
+    Versioned: SilverStripe\Versioned\Versioned.versioned
+```
+
 In this case:
 - `isPublished()` always returns true (no staging = always "published")
 - Files are only protected based on CanViewType permissions
@@ -585,8 +645,11 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
 A BuildTask is included to verify your configuration and test URL generation/validation:
 
 ```bash
-vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
+vendor/bin/sake tasks:SignedAssetUrlVerifyTask        # Silverstripe 6
+vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask    # Silverstripe 5
 ```
+
+It can also be run in a browser, as an admin, at `/dev/tasks/SignedAssetUrlVerifyTask`.
 
 This task will:
 1. Check that `ASSET_SIGNING_SECRET` is configured
@@ -595,6 +658,10 @@ This task will:
 4. Generate a test signed URL and validate its components
 5. Test signature validation (valid, invalid, and expired cases)
 6. Test session-bound URL generation
+
+On Silverstripe 6 the command exits non-zero when a check fails (eg a missing secret), so a deploy
+hook can run `vendor/bin/sake tasks:SignedAssetUrlVerifyTask || <alert>`. Silverstripe 5's task
+runner has no exit code for a task; there, check the output for `FAIL`.
 
 Example output:
 ```
@@ -622,6 +689,11 @@ After making changes to the controller or signing service, verify the following:
 #### 1. Build and config verification
 
 ```bash
+# Silverstripe 6
+vendor/bin/sake db:build --flush
+vendor/bin/sake tasks:SignedAssetUrlVerifyTask
+
+# Silverstripe 5
 vendor/bin/sake dev/build flush=1
 vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
 ```
@@ -651,7 +723,7 @@ Load a page that renders signed asset URLs (e.g. a page with protected images or
 The controller uses framework-based file resolution (`resolveFilePath()`) which handles both hash-based paths (`Uploads/abc1234567/file.pdf`) and natural paths (`Uploads/file.pdf`). To verify resolution works for a specific file:
 
 ```bash
-# Find a file with a known hash
+# Find a file with a known hash (orm-query is a task from restruct/silverstripe-admintweaks)
 vendor/bin/sake dev/tasks/orm-query class=File "filter[FileHash:not]=" limit=3 fields=ID,FileFilename,FileHash
 
 # Check which storage layout is used on disk
@@ -669,7 +741,32 @@ If `ASSET_FILE_SERVER` is set to `apache` or `nginx`:
 - Check PHP memory usage stays low when serving large files
 - If handoff fails, the controller falls through to PHP streaming automatically
 
+### Running the tests
+
+The suite needs a booted Silverstripe app, so it runs from a host project that requires this
+module through a path repository with `"options": { "symlink": true }` (`/tests` is excluded from
+dist installs). Copy `phpunit.xml.dist` to the host root, then:
+
+```bash
+# Silverstripe 6: flush the test manifest through the environment
+SS_PHPUNIT_FLUSH=1 vendor/bin/phpunit --fail-on-empty-test-suite --testsuite signed-asset-urls
+
+# Silverstripe 5: flush=1 only works AFTER an explicit test path
+vendor/bin/phpunit --fail-on-empty-test-suite vendor/restruct/silverstripe-signed-asset-urls/tests flush=1
+```
+
+Most of the suite assumes files are versioned **without** draft/live staging (see "Projects with
+staging disabled" above), so the host needs that configuration; on a stock staged install nine
+tests fail because the files they create are never published. `.github/workflows/ci.yml` builds
+such a host for every supported Silverstripe major. Staged File is still covered:
+`SignedAssetUrlStagedFileTest` switches File to draft/live staging for its own tests and checks
+that an unpublished file is refused and a published one served.
+
 #### What is NOT covered by automated tests
 
-This module has no PHPUnit tests. The `resolveFilePath()` method requires a fully bootstrapped SilverStripe environment with actual filesystem adapters, making unit testing impractical without integration test infrastructure. All testing is manual via the checklist above and the `SignedAssetUrlVerifyTask`.
+- The nginx X-Accel-Redirect handoff is checked only as far as the response header: whether nginx
+  then serves the file depends on the server config above. The Apache X-Sendfile branch has no
+  test.
+- Session-bound URLs are tested with an injected session token; the real one is empty under the
+  test runner.
 

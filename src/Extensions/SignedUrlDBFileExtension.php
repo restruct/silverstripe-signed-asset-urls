@@ -8,6 +8,7 @@ use SilverStripe\Core\Extension;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Versioned\Versioned;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
+use Psr\Log\LoggerInterface;
 
 /**
  * Extension for DBFile to add signed URL generation.
@@ -130,6 +131,17 @@ class SignedUrlDBFileExtension extends Extension
             if (isset($policies[$policyOrTtl])) {
                 $ttl = $policies[$policyOrTtl]['ttl'] ?? null;
                 $bindToSession = $policies[$policyOrTtl]['session'] ?? null;
+            } else {
+                // An unknown name silently fell back to the default TTL WITHOUT session binding -
+                // the README itself once used the nonexistent 'md'/'md_sess', handing out
+                // shareable links where session-bound ones were meant. The fallback is kept (a
+                // behaviour change belongs in a major), but it is no longer silent.
+                Injector::inst()->get(LoggerInterface::class)->warning(sprintf(
+                    'signed-asset-urls: unknown policy "%s" in AutoURL()/MaskedURL(); using the default TTL'
+                    . ' without session binding. Known policies: %s (AssetUrlSigningService.policies).',
+                    $policyOrTtl,
+                    implode(', ', array_keys((array) $policies))
+                ));
             }
         } elseif (is_int($policyOrTtl)) {
             $ttl = $policyOrTtl;
