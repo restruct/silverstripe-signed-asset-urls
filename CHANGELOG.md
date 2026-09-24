@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 (unreleased)
+## 1.2.0 (2026-09-25)
 
 Adds Silverstripe 6 support. One line now covers Silverstripe 5 and 6 (PHP 8.1+; Silverstripe 6
 itself needs 8.3+). Nothing changes for Silverstripe 5 projects: URLs, config, template and PHP
@@ -28,6 +28,15 @@ methods are the same as in 1.1.9. See [UPGRADING.md](UPGRADING.md).
   unknown policy name falls back to the default TTL **without session binding**, so a template
   copied from the README handed out shareable links where it meant session-bound ones. The
   examples use `m` and `ms` now. If you copied them, check your templates.
+- Silverstripe 6: the verify task exited 0 ("completed successfully") even when a check failed,
+  eg a missing `ASSET_SIGNING_SECRET`. It now exits non-zero, so `sake ... || alert` works.
+  Silverstripe 5's task runner has no exit code for tasks; the output still says `FAIL`.
+
+### Changed (behaviour)
+
+- An unknown policy name in `AutoURL()` / `MaskedURL()` / `MaskedScaleWidthURL()` now logs a
+  warning (via the `Psr\Log\LoggerInterface` service). The URL it returns is unchanged: default
+  TTL, not session-bound. Turning an unknown name into an error is left for a major version.
 
 ### Documentation
 
@@ -40,9 +49,11 @@ methods are the same as in 1.1.9. See [UPGRADING.md](UPGRADING.md).
 
 ### Tests and CI
 
-- The suite (59 tests in 1.1.9) gains tests for the verify task on both majors and a regression
-  test for the unversioned-file fix, and runs on Silverstripe 5 and 6 in GitHub Actions, with a
-  consumer-shape database test, a `dev/build` and a run of the verify task.
+- The suite (59 tests in 1.1.9) gains tests for the verify task (including its exit code) on both
+  majors, a regression test for the unversioned-file fix, a test of the published-status check
+  against staged (draft/live) File, and a test for the unknown-policy warning. It runs on
+  Silverstripe 5 and 6 in GitHub Actions, with a consumer-shape database test, a `dev/build` and a
+  run of the verify task; a run that finds no tests fails.
 - `phpunit.xml.dist` is now for running from a host project (see README); its coverage block,
   which pointed at a `src/` directory that does not exist in a host, is dropped.
 
@@ -50,5 +61,5 @@ methods are the same as in 1.1.9. See [UPGRADING.md](UPGRADING.md).
 
 - Licence: MIT, as `composer.json` already declared; a `LICENSE` file is added.
 - `composer.json` has a `funding` entry; `require-dev` is `silverstripe/recipe-testing` instead of
-  `phpunit/phpunit`.
+  `phpunit/phpunit`; it suggests `silverstripe/versioned` (optional, as before).
 - `/tests`, `.github` and development files are excluded from dist installs (`.gitattributes`).

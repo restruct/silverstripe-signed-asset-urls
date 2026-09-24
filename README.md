@@ -367,6 +367,9 @@ Usage:
 <img src="$PreviewImage.AutoURL('preview')">
 ```
 
+A policy name that is not configured falls back to the default TTL **without** session binding,
+and logs a warning naming the unknown policy (from 1.2.0; earlier versions fell back silently).
+
 ## URL Formats
 
 Generated URLs use S3-style query parameters for clean, readable paths:
@@ -654,6 +657,10 @@ This task will:
 5. Test signature validation (valid, invalid, and expired cases)
 6. Test session-bound URL generation
 
+On Silverstripe 6 the command exits non-zero when a check fails (eg a missing secret), so a deploy
+hook can run `vendor/bin/sake tasks:SignedAssetUrlVerifyTask || <alert>`. Silverstripe 5's task
+runner has no exit code for a task; there, check the output for `FAIL`.
+
 Example output:
 ```
 === Signed Asset URLs Configuration Verification ===
@@ -740,16 +747,18 @@ dist installs). Copy `phpunit.xml.dist` to the host root, then:
 
 ```bash
 # Silverstripe 6: flush the test manifest through the environment
-SS_PHPUNIT_FLUSH=1 vendor/bin/phpunit --testsuite signed-asset-urls
+SS_PHPUNIT_FLUSH=1 vendor/bin/phpunit --fail-on-empty-test-suite --testsuite signed-asset-urls
 
 # Silverstripe 5: flush=1 only works AFTER an explicit test path
-vendor/bin/phpunit vendor/restruct/silverstripe-signed-asset-urls/tests flush=1
+vendor/bin/phpunit --fail-on-empty-test-suite vendor/restruct/silverstripe-signed-asset-urls/tests flush=1
 ```
 
 Most of the suite assumes files are versioned **without** draft/live staging (see "Projects with
 staging disabled" above), so the host needs that configuration; on a stock staged install nine
 tests fail because the files they create are never published. `.github/workflows/ci.yml` builds
-such a host for every supported Silverstripe major.
+such a host for every supported Silverstripe major. Staged File is still covered:
+`SignedAssetUrlStagedFileTest` switches File to draft/live staging for its own tests and checks
+that an unpublished file is refused and a published one served.
 
 #### What is NOT covered by automated tests
 
