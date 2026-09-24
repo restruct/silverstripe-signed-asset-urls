@@ -1,0 +1,54 @@
+# Changelog
+
+## 1.2.0 (unreleased)
+
+Adds Silverstripe 6 support. One line now covers Silverstripe 5 and 6 (PHP 8.1+; Silverstripe 6
+itself needs 8.3+). Nothing changes for Silverstripe 5 projects: URLs, config, template and PHP
+methods are the same as in 1.1.9. See [UPGRADING.md](UPGRADING.md).
+
+### Silverstripe 6 support
+
+- `SignedAssetUrlVerifyTask` redeclared `BuildTask`'s `$title` and `$description`, which
+  Silverstripe 6 made typed (and `$description` static). On Silverstripe 6 that is a fatal error
+  when the class loads, and the class manifest loads every class on a flush, so the whole
+  application failed on its first `dev/build`. The task's entry point now comes from a per-major
+  trait (`run()` on 5, `execute()` on 6). Run it with `sake tasks:SignedAssetUrlVerifyTask` on 6;
+  `sake dev/tasks/SignedAssetUrlVerifyTask` on 5 is unchanged.
+- `composer.json` allows `silverstripe/framework` `^5 || ^6` and `silverstripe/assets` `^2 || ^3`,
+  and declares PHP `^8.1`.
+
+### Fixed
+
+- Serving a signed URL called `File::isPublished()` without checking that File has the
+  `Versioned` extension. `silverstripe/versioned` is not a dependency of `silverstripe/assets` or
+  `recipe-core`, so on a project without it every signed URL failed under the default config
+  (`check_published_status: true`). Files without versioning now count as published, as they
+  already did when the URL was generated.
+- README: the caching examples used the policy names `md` and `md_sess`, which do not exist. An
+  unknown policy name falls back to the default TTL **without session binding**, so a template
+  copied from the README handed out shareable links where it meant session-bound ones. The
+  examples use `m` and `ms` now. If you copied them, check your templates.
+
+### Documentation
+
+- How to generate `ASSET_SIGNING_SECRET`, including Silverstripe's own token generator
+  (`sake generatesecuretoken` on 6, `sake dev/generatesecuretoken` on 5) (#1). The module does not
+  hook into the generator: any long random string works, and a generic one is enough.
+- Requirements, installation, a compatibility table, and how to run the tests.
+- Configuring versioning-only files in YAML alone, without `_config.php`.
+- The task commands for both majors.
+
+### Tests and CI
+
+- The suite (59 tests in 1.1.9) gains tests for the verify task on both majors and a regression
+  test for the unversioned-file fix, and runs on Silverstripe 5 and 6 in GitHub Actions, with a
+  consumer-shape database test, a `dev/build` and a run of the verify task.
+- `phpunit.xml.dist` is now for running from a host project (see README); its coverage block,
+  which pointed at a `src/` directory that does not exist in a host, is dropped.
+
+### Changed
+
+- Licence: MIT, as `composer.json` already declared; a `LICENSE` file is added.
+- `composer.json` has a `funding` entry; `require-dev` is `silverstripe/recipe-testing` instead of
+  `phpunit/phpunit`.
+- `/tests`, `.github` and development files are excluded from dist installs (`.gitattributes`).
