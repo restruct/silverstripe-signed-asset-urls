@@ -138,6 +138,8 @@ jobs:
               <testsuites>
                   <testsuite name="signed-asset-urls">
                       <directory>vendor/restruct/silverstripe-signed-asset-urls/tests</directory>
+                      <!-- Playwright specs and their fixtures, run by the Browser tests workflow -->
+                      <exclude>vendor/restruct/silverstripe-signed-asset-urls/tests/browser</exclude>
                   </testsuite>
                   <testsuite name="consumer">
                       <directory>app/tests</directory>

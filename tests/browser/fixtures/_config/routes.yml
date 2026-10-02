@@ -1,0 +1,10 @@
+---
+Name: sau-browser-fixtures
+After: '#signed-asset-urls'
+---
+# BROWSER-TEST FIXTURE ONLY - copied to the scratch host's app/_config/browser-fixtures/ by the
+# runner (fixture YAML in app/src would never be read). A plain Controller is only reachable
+# through a Director rule, hence this file.
+SilverStripe\Control\Director:
+  rules:
+    'sau-browser//$Action/$ID': 'Restruct\SauBrowser\SauBrowserController'

@@ -9,6 +9,8 @@
     <testsuites>
         <testsuite name="signed-asset-urls">
             <directory>vendor/restruct/silverstripe-signed-asset-urls/tests</directory>
+            <!-- Playwright specs and their fixtures, run by tools/browser/run.sh and the Browser tests workflow -->
+            <exclude>vendor/restruct/silverstripe-signed-asset-urls/tests/browser</exclude>
         </testsuite>
     </testsuites>
     <php>
