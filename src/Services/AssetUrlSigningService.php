@@ -242,11 +242,11 @@ class AssetUrlSigningService
      * carries a session cookie or something writes to the session. Binding to "no session" binds to
      * nothing (issue #6), so the session is started here and the URL bound to its new ID; the
      * visitor's next request carries the cookie. Where no session can be started (CLI, queued
-     * jobs, headers already sent) the token stays empty, which validateSignature() never accepts:
-     * the URL is issued but works for nobody, and a warning says why.
+     * jobs, headers already sent) the URL is signed with a random token nobody can reproduce: it is
+     * issued but works for nobody (with or without its ss flag), and a warning says why.
      *
      * @param string $path For the warning only
-     * @return string Session token, or '' when the URL cannot be bound
+     * @return string Session token, or a random unreproducible token when the URL cannot be bound
      */
     protected function getBindingSessionToken(string $path): string
     {
@@ -264,6 +264,13 @@ class AssetUrlSigningService
                 . ' Use a policy without session binding for URLs that leave the visitor\'s browser session.',
                 $path
             ));
+        }
+
+        if ($token === '') {
+            # Never sign an unbindable URL with an empty token: generateHash() then produces exactly
+            # the unbound hash, so stripping &ss=1 would turn it into a URL that works for everyone.
+            # A random token nobody can reproduce makes it dead both with and without the flag.
+            return bin2hex(random_bytes(16));
         }
 
         return $token;

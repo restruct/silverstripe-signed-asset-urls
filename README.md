@@ -413,11 +413,14 @@ session-bound URL is generated for such a visitor, the module starts their sessi
 sends a session cookie) and binds the URL to it. Consequences:
 
 - A page that renders a session-bound URL is per-visitor: the middleware marks it
-  `Cache-Control: private` (dropping `public` and `s-maxage`), so no CDN or proxy stores it.
-  Silverstripe itself also treats a request with session data as private. Use a policy without
-  session binding (`s`, `m`, `l`) on pages you want cached publicly.
+  `Cache-Control: private` (dropping `public` and `s-maxage`; a stricter `no-store` is kept), so
+  no CDN or proxy stores it. Silverstripe itself also treats a request with session data as
+  private. Every anonymous visitor of such a page gets a server-side session, bots included. Use
+  a policy without session binding (`s`, `m`, `l`) on pages you want cached publicly or that get
+  heavy anonymous traffic.
 - Where no session can be started (CLI, queued jobs, mail sent from a task, output already
-  sent), the URL is still generated but **works for nobody**, and a warning is logged once per
+  sent), the URL is still generated but **works for nobody** (it is signed with a random token,
+  so removing `ss=1` does not help either), and a warning is logged once per
   request (via the `Psr\Log\LoggerInterface` service). Do not use session-bound URLs in emails
   or anything else that leaves the visitor's browser session.
 - A session-bound URL is refused to any request without a session, and Silverstripe gives a

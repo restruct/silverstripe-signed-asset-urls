@@ -8,7 +8,9 @@ use Restruct\SilverStripe\SignedAssetUrls\Middleware\SignedAssetUrlCacheMiddlewa
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
+use SilverStripe\Control\Middleware\HTTPCacheControlMiddleware;
 use SilverStripe\Control\Session;
+use SilverStripe\Core\Config\Config;
 use SilverStripe\Core\Environment;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Dev\SapphireTest;
@@ -152,6 +154,29 @@ class SessionBoundUrlWithoutSessionTest extends SapphireTest
         $this->assertStringContainsString('session-bound', $warnings[0]);
     }
 
+    public function testUnbindableUrlStaysDeadWithItsSessionFlagStripped(): void
+    {
+        # Signed where no session exists (CLI, queued job). With an empty token its hash equalled
+        # the unbound hash, so dropping &ss=1 made it a URL that works for everyone.
+        $url = $this->sessionless()->generateSignedURL('Uploads/a/doc.pdf', 300, true);
+        [$path, $p] = $this->parse($url);
+
+        $withSession = new NoSessionSigningService();
+        $withSession->fakeSessionToken = 'session-B';
+        foreach (['no session' => $this->sessionless(), 'a session' => $withSession] as $who => $svc) {
+            $this->assertSame(
+                'invalid_signature',
+                $svc->validateSignature($p['s'], (int) $p['e'], $path, false),
+                "ss flag stripped, requested with $who"
+            );
+            $this->assertSame(
+                'invalid_signature',
+                $svc->validateSignature($p['s'], (int) $p['e'], $path, true),
+                "ss flag kept, requested with $who"
+            );
+        }
+    }
+
     public function testStartsTheVisitorsSessionWhenItCan(): void
     {
         # A web request whose visitor has no session yet: generating a session-bound URL starts the
@@ -216,6 +241,101 @@ class SessionBoundUrlWithoutSessionTest extends SapphireTest
             }
         );
         $this->assertStringContainsString('public', (string) $response->getHeader('Cache-Control'));
+    }
+
+    /**
+     * Run the module middleware inside Silverstripe's own cache middleware state, the way they nest
+     * in a real request, and return the final Cache-Control.
+     *
+     * @param callable $setCoreState Receives a fresh HTTPCacheControlMiddleware to put in a state
+     */
+    private function finalCacheControl(bool $autoCacheHeaders, callable $setCoreState): string
+    {
+        Config::modify()->set(AssetUrlSigningService::class, 'auto_cache_headers', $autoCacheHeaders);
+        # Live defaults: the dev environment (the test host) forces the disabled state at level 3,
+        # which would hide every case below behind no-store.
+        Config::modify()->set(HTTPCacheControlMiddleware::class, 'defaultState', HTTPCacheControlMiddleware::STATE_ENABLED);
+        Config::modify()->set(HTTPCacheControlMiddleware::class, 'defaultForcingLevel', 0);
+        $core = new HTTPCacheControlMiddleware();
+        Injector::inst()->registerService($core, HTTPCacheControlMiddleware::class);
+        $setCoreState($core);
+
+        $svc = new NoSessionSigningService();
+        $svc->fakeSessionToken = 'session-A';
+        $response = (new SignedAssetUrlCacheMiddleware())->process(
+            new HTTPRequest('GET', '/'),
+            function () use ($svc) {
+                $svc->generateSignedURL('a/b.png', 3600, true);
+                return HTTPResponse::create('body');
+            }
+        );
+        # What HTTPCacheControlMiddleware does after the inner middlewares return.
+        $core->applyToResponse($response);
+        return (string) $response->getHeader('Cache-Control');
+    }
+
+    public function testCacheMatrixWithoutAutoCacheHeadersEnabledCacheBecomesPrivate(): void
+    {
+        $header = $this->finalCacheControl(false, function (HTTPCacheControlMiddleware $core) {
+            $core->enableCache(false, 600);
+        });
+        $this->assertStringContainsString('private', $header);
+        $this->assertStringNotContainsString('public', $header);
+    }
+
+    public function testCacheMatrixWithoutAutoCacheHeadersDefaultStateBecomesPrivate(): void
+    {
+        $header = $this->finalCacheControl(false, function (HTTPCacheControlMiddleware $core) {
+        });
+        $this->assertStringContainsString('private', $header);
+        $this->assertStringNotContainsString('public', $header);
+    }
+
+    public function testCacheMatrixWithoutAutoCacheHeadersForcedPublicBecomesPrivate(): void
+    {
+        $header = $this->finalCacheControl(false, function (HTTPCacheControlMiddleware $core) {
+            $core->publicCache(true, 600);
+        });
+        $this->assertStringContainsString('private', $header);
+        $this->assertStringNotContainsString('public', $header);
+    }
+
+    public function testCacheMatrixWithoutAutoCacheHeadersKeepsDisabledCache(): void
+    {
+        # A bare "private" written by the module used to replace core's stricter no-store.
+        $header = $this->finalCacheControl(false, function (HTTPCacheControlMiddleware $core) {
+            $core->disableCache();
+        });
+        $this->assertStringContainsString('no-store', $header);
+        $this->assertStringNotContainsString('public', $header);
+    }
+
+    public function testCacheMatrixWithoutAutoCacheHeadersKeepsForcedDisabledCache(): void
+    {
+        $header = $this->finalCacheControl(false, function (HTTPCacheControlMiddleware $core) {
+            $core->disableCache(true);
+        });
+        $this->assertStringContainsString('no-store', $header);
+        $this->assertStringNotContainsString('public', $header);
+    }
+
+    public function testCacheMatrixWithAutoCacheHeadersIsPrivate(): void
+    {
+        foreach ([
+            'default' => function (HTTPCacheControlMiddleware $core) {
+            },
+            'forced public' => function (HTTPCacheControlMiddleware $core) {
+                $core->publicCache(true, 600);
+            },
+            'disabled' => function (HTTPCacheControlMiddleware $core) {
+                $core->disableCache();
+            },
+        ] as $state => $setCoreState) {
+            AssetUrlSigningService::resetExpiryTracker();
+            $header = $this->finalCacheControl(true, $setCoreState);
+            $this->assertStringContainsString('private', $header, $state);
+            $this->assertStringNotContainsString('public', $header, $state);
+        }
     }
 }
 
