@@ -4,6 +4,7 @@ namespace Restruct\SilverStripe\SignedAssetUrls\Middleware;
 
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
+use SilverStripe\Control\Middleware\HTTPCacheControlMiddleware;
 use SilverStripe\Control\Middleware\HTTPMiddleware;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 
@@ -30,7 +31,45 @@ class SignedAssetUrlCacheMiddleware implements HTTPMiddleware
             $this->adjustCacheHeaders($response, $earliestExpiry);
         }
 
+        # A session-bound URL belongs to one visitor, and generating it may have started that
+        # visitor's session (Set-Cookie). A shared cache must never store such a page, whatever the
+        # page itself asked for (issue #6).
+        if ($response && AssetUrlSigningService::sessionBoundUrlIssued()) {
+            $this->forcePrivate($response);
+        }
+
         return $response;
+    }
+
+    /**
+     * Make the response uncacheable by shared caches (CDNs, proxies): "private" instead of "public".
+     */
+    protected function forcePrivate(HTTPResponse $response): void
+    {
+        $header = (string) $response->getHeader('Cache-Control');
+        if ($header === '') {
+            # No header yet: HTTPCacheControlMiddleware (outside this one) writes it from its state
+            # after we return. Steer that state instead of writing a bare "private", which would
+            # replace a stricter "no-cache, no-store" the page or core asked for. Forced, so a
+            # forced publicCache() cannot win; a forced disableCache() still does (higher level),
+            # and a page already in the disabled state is left disabled.
+            $cacheControl = HTTPCacheControlMiddleware::singleton();
+            if ($cacheControl->getState() !== HTTPCacheControlMiddleware::STATE_DISABLED) {
+                $cacheControl->privateCache(true);
+            }
+            return;
+        }
+
+        $directives = array_filter(array_map('trim', explode(',', $header)), function (string $directive) {
+            # "public" and "s-maxage" are the shared-cache permissions; drop both.
+            $name = strtolower(strtok($directive, '='));
+            return $directive !== '' && $name !== 'public' && $name !== 's-maxage';
+        });
+        $hasPrivate = (bool) array_filter($directives, fn (string $d) => strtolower($d) === 'private');
+        if (!$hasPrivate) {
+            array_unshift($directives, 'private');
+        }
+        $response->addHeader('Cache-Control', implode(', ', $directives));
     }
 
     /**

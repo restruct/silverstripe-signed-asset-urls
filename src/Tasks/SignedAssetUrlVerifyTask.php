@@ -119,7 +119,11 @@ class SignedAssetUrlVerifyTask extends BuildTask
         $output("");
         $output("=== URL Generation Test ===");
         $testPath = 'test.txt';
-        $signedUrl = $service->generateSignedURL($testPath, 3600);
+        # Explicitly not session-bound: this round-trip checks the signature itself. With
+        # bind_to_session: true it used to sign a session-bound URL, which on the CLI (no session)
+        # is now refused by design (issue #6) and would report a FAIL that is not one. Section 6
+        # covers session-bound URLs.
+        $signedUrl = $service->generateSignedURL($testPath, 3600, false);
         $output("Test path: " . $testPath);
         $output("Signed URL: " . $signedUrl);
 
@@ -169,6 +173,10 @@ class SignedAssetUrlVerifyTask extends BuildTask
         $hasSessionFlag = str_contains($sessionUrl, 'ss=1');
         $output("Contains session flag (ss=1): " . ($hasSessionFlag ? "PASS" : "FAIL"));
         $ok = $ok && $hasSessionFlag;
+        # Not a failure: it says why a session-bound URL made here cannot be opened anywhere.
+        if (session_id() === '') {
+            $output("No session in this run (eg CLI): a session-bound URL made here is refused to everyone.");
+        }
 
         // 7. Show file server configuration
         $output("");

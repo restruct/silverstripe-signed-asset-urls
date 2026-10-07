@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.2.1 (2026-10-07)
+
+### Security
+
+- Session-bound signed URLs (`AutoURL('ss')`, `'ms'`, `'ls'`, `SignedURL($ttl, true)`,
+  `bind_to_session: true`) were not bound to anything when the visitor had no PHP session yet,
+  eg a first-time anonymous visitor. The URL was signed with an empty session token, every other
+  browser without a session computed the same empty token, and was served the file until the URL
+  expired ([#6](https://github.com/restruct/silverstripe-signed-asset-urls/issues/6)). Now:
+  - a session-bound URL is refused (403) to any request without a session;
+  - generating one for a visitor without a session starts their session and binds the URL to it,
+    so it keeps working for that visitor and for nobody else;
+  - a page that renders a session-bound URL gets `Cache-Control: private` (`public` and
+    `s-maxage` are removed), so a shared cache never stores it, nor the session cookie it may set.
+    A stricter state (`no-store` from `disableCache()`) is kept.
+- The signed-asset controller refuses any validation result other than success, not only the two
+  it knew by name.
+
+### Changed (behaviour)
+
+- Anonymous visitors of a page that renders a session-bound URL now receive a session cookie, and
+  that page is no longer publicly cacheable. Every such visitor, bots included, now creates a
+  server-side session, so session storage grows with anonymous traffic to those pages. Use a
+  policy without session binding on pages that must stay cacheable or see heavy anonymous traffic.
+- A session-bound URL generated where no session can exist (CLI, queued jobs, mail sent from a
+  task) now works for nobody, where it used to work for anyone without a session: it is signed
+  with a random token, so removing its `ss=1` does not turn it into a shareable URL either. A
+  warning is logged once per request. Use a policy without session binding for such URLs.
+- Silverstripe 6 only: its default `Session.cookie_samesite` is `Strict`, so a visitor arriving
+  from another site (email, search, chat link) sends no session cookie; generating a
+  session-bound URL then starts a new session whose cookie replaces the visitor's existing one
+  (logged out, session state lost). Set `SilverStripe\Control\Session.cookie_samesite: Lax` on
+  Silverstripe 6 sites that use session-bound URLs (see README, "Session Binding").
+  Silverstripe 5 defaults to `Lax` and is not affected.
+- `SignedAssetUrlVerifyTask` checks its signature round-trip with an unbound URL, so it no longer
+  reports a failure on the CLI when `bind_to_session` is true.
+
 ## 1.2.0 (2026-09-25)
 
 Adds Silverstripe 6 support. One line now covers Silverstripe 5 and 6 (PHP 8.1+; Silverstripe 6

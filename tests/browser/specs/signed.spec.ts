@@ -151,17 +151,30 @@ test.describe('Session binding', () => {
     });
 
     // https://github.com/restruct/silverstripe-signed-asset-urls/issues/6 - without a PHP session the
-    // session token is '' at signing and again at validation, so another browser is served (200).
-    // Measured red on SS5 and SS6 (2026-10-02).
-    test.fixme('a session-bound URL handed to a visitor without a session is bound too', async ({ browser, baseURL }) => {
+    // session token was '' at signing and again at validation, so another browser was served (200).
+    // Measured red on SS5 and SS6 (2026-10-02). Now the visitor's session is started when the URL is
+    // made, and a session-bound URL is refused to any request without a session.
+    test('a session-bound URL handed to a visitor without a session is bound too', async ({ browser, baseURL }) => {
         const visitor = await visitorContext(browser, baseURL);
         const stranger = await visitorContext(browser, baseURL);
         try {
             const page = await visitor.newPage();
-            await openFixturePage(page, 'ss');
+            const response = await openFixturePage(page, 'ss');
             const bound = await src(page, 'protected');
             expect(bound).toMatch(SIGNED_SESSION);
+            // Another browser without a session must not be served: the leak of issue #6.
             expect((await stranger.request.get(bound)).status(), 'another browser with the same URL').toBe(403);
+
+            // The page started the visitor's session, and says so to every cache: not public.
+            // (headerValue, not headers(): Playwright leaves Set-Cookie out of headers().)
+            expect(await response.headerValue('set-cookie') ?? '', 'the page starts a session').not.toBe('');
+            const cacheControl = response.headers()['cache-control'] ?? '';
+            expect(cacheControl).toContain('private');
+            expect(cacheControl).not.toContain('public');
+
+            // The visitor who got it can use it: the image loaded, and a direct request is served.
+            expect(await loadedSize(page.locator('img#protected'))).toEqual({ w: 40, h: 30 });
+            expect((await visitor.request.get(bound)).status(), 'the visitor who got the URL').toBe(200);
         } finally {
             await Promise.all([visitor.close(), stranger.close()]);
         }
