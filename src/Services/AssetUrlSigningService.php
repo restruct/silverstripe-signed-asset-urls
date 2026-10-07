@@ -90,6 +90,8 @@ class AssetUrlSigningService
 
     /**
      * Session key written when a session is started to bind a URL to it.
+     *
+     * @internal Not part of the public API; may change in any release.
      */
     public const SESSION_MARKER = 'SignedAssetUrls.SessionBound';
 
@@ -455,6 +457,8 @@ class AssetUrlSigningService
 
     /**
      * Whether a session-bound URL was generated during this request
+     *
+     * @internal Used by SignedAssetUrlCacheMiddleware; not part of the public API.
      *
      * @return bool
      */

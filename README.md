@@ -426,6 +426,18 @@ sends a session cookie) and binds the URL to it. Consequences:
 - A session-bound URL is refused to any request without a session, and Silverstripe gives a
   visitor a new session ID when they log in, so URLs issued before logging in stop working after.
 
+**Silverstripe 6: set the session cookie to `SameSite=Lax`.** Silverstripe 6 defaults
+`Session.cookie_samesite` to `Strict` (Silverstripe 5 defaults to `Lax` and is not affected). A
+visitor who arrives from another site (a link in an email, a search result, a chat) then does not
+send their session cookie, so the page sees no session, the module starts a new one, and its
+`Set-Cookie` replaces the visitor's existing session: they are logged out and lose session state.
+On Silverstripe 6 sites that use session-bound URLs:
+
+```yaml
+SilverStripe\Control\Session:
+  cookie_samesite: Lax
+```
+
 ## How It Works
 
 1. **URL Generation**: PHP generates a signed URL with HMAC hash and expiry timestamp

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.1 (unreleased)
+## 1.2.1 (2026-10-07)
 
 ### Security
 
@@ -28,6 +28,12 @@
   task) now works for nobody, where it used to work for anyone without a session: it is signed
   with a random token, so removing its `ss=1` does not turn it into a shareable URL either. A
   warning is logged once per request. Use a policy without session binding for such URLs.
+- Silverstripe 6 only: its default `Session.cookie_samesite` is `Strict`, so a visitor arriving
+  from another site (email, search, chat link) sends no session cookie; generating a
+  session-bound URL then starts a new session whose cookie replaces the visitor's existing one
+  (logged out, session state lost). Set `SilverStripe\Control\Session.cookie_samesite: Lax` on
+  Silverstripe 6 sites that use session-bound URLs (see README, "Session Binding").
+  Silverstripe 5 defaults to `Lax` and is not affected.
 - `SignedAssetUrlVerifyTask` checks its signature round-trip with an unbound URL, so it no longer
   reports a failure on the CLI when `bind_to_session` is true.
 
