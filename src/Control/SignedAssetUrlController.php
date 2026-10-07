@@ -76,6 +76,12 @@ class SignedAssetUrlController extends Controller
             if ($validation === 'invalid_signature') {
                 return $this->httpError(403, 'Invalid signature');
             }
+
+            # Fail closed: any other answer than true (eg a reason added to validateSignature() later)
+            # must refuse the file, not fall through to serving it.
+            if ($validation !== true) {
+                return $this->httpError(403, 'Invalid signature');
+            }
         }
 
         // Determine if this is a variant path (hash-prefixed) or original file path

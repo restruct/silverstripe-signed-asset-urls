@@ -407,6 +407,22 @@ When `bind_to_session` is enabled (globally or per-URL), the signed URL includes
 
 The session token is derived from PHP's session ID using HMAC, so the actual session ID is never exposed in the URL.
 
+**A session-bound URL needs a session.** Silverstripe only starts a session once the visitor has a
+session cookie or something is stored in it, so a first-time anonymous visitor has none. When a
+session-bound URL is generated for such a visitor, the module starts their session (the page then
+sends a session cookie) and binds the URL to it. Consequences:
+
+- A page that renders a session-bound URL is per-visitor: the middleware marks it
+  `Cache-Control: private` (dropping `public` and `s-maxage`), so no CDN or proxy stores it.
+  Silverstripe itself also treats a request with session data as private. Use a policy without
+  session binding (`s`, `m`, `l`) on pages you want cached publicly.
+- Where no session can be started (CLI, queued jobs, mail sent from a task, output already
+  sent), the URL is still generated but **works for nobody**, and a warning is logged once per
+  request (via the `Psr\Log\LoggerInterface` service). Do not use session-bound URLs in emails
+  or anything else that leaves the visitor's browser session.
+- A session-bound URL is refused to any request without a session, and Silverstripe gives a
+  visitor a new session ID when they log in, so URLs issued before logging in stop working after.
+
 ## How It Works
 
 1. **URL Generation**: PHP generates a signed URL with HMAC hash and expiry timestamp
@@ -767,6 +783,7 @@ that an unpublished file is refused and a published one served.
 - The nginx X-Accel-Redirect handoff is checked only as far as the response header: whether nginx
   then serves the file depends on the server config above. The Apache X-Sendfile branch has no
   test.
-- Session-bound URLs are tested with an injected session token; the real one is empty under the
-  test runner.
+- Session-bound URLs are unit-tested with an injected session token; the real one is empty under
+  the test runner. Starting a real session for an anonymous visitor (cookie, binding, refusal to
+  another browser) is covered by the browser tests in `tests/browser/`.
 
