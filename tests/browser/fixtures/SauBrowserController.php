@@ -7,6 +7,7 @@ use SilverStripe\Assets\Image;
 use SilverStripe\Control\Controller;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
+use SilverStripe\Control\Middleware\HTTPCacheControlMiddleware;
 use SilverStripe\Security\Member;
 use SilverStripe\Security\PasswordEncryptor;
 use SilverStripe\Security\Permission;
@@ -22,7 +23,8 @@ use SilverStripe\Versioned\Versioned;
  *     - sau-browser/public.png     published, anyone can view            -> plain /assets URL
  *     - a member visitor@sau.test (password in VISITOR_PASSWORD) without any CMS permission.
  *   GET /sau-browser/page?policy=m  a front-end page, open to anyone, with the three images
- *     through AutoURL(policy) plus a download link. Like a template would render them, but
+ *     through AutoURL(policy) plus a download link. &cache=private|disabled sets the page's own
+ *     cache state. Like a template would render them, but
  *     without one (fixtures cannot carry templates); it goes through the full middleware stack.
  *
  * The runner copies tests/browser/fixtures/ into the scratch host's app/; in the module itself it
@@ -77,6 +79,14 @@ class SauBrowserController extends Controller
     public function page(HTTPRequest $request): HTTPResponse
     {
         $policy = (string) ($request->getVar('policy') ?: 'm');
+        # ?cache=private|disabled: the cache state the page itself asks core for (issue #8), forced
+        # so it also holds against the dev environment's default (disabled, forcing level 3).
+        $cache = (string) $request->getVar('cache');
+        if ($cache === 'private') {
+            HTTPCacheControlMiddleware::singleton()->privateCache(true);
+        } elseif ($cache === 'disabled') {
+            HTTPCacheControlMiddleware::singleton()->disableCache(true);
+        }
         $html = ['<!DOCTYPE html><html><head><title>Signed asset URLs</title></head><body>'];
         foreach (['protected', 'draft', 'public'] as $name) {
             # Read from the draft stage: a front-end request reads Live, where the draft file does

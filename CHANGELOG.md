@@ -10,6 +10,14 @@
   draft content (the same check that bypasses signing) now gets a second lookup in the draft
   stage when the live one finds nothing. Visitors and members without CMS access still get 404
   ([#7](https://github.com/restruct/silverstripe-signed-asset-urls/issues/7)).
+- A page that renders a signed URL and was sent as `no-store` (`disableCache()`, a form with a
+  security token, the CMS, the dev environment's default) got `max-age=N` and an `Expires` in the
+  future added to its `Cache-Control`, so the browser could keep it for as long as the URL lived.
+  A `no-store` response is now left alone. Where core has not written the header yet (it runs
+  outside this module's middleware only if a project reorders `Director.Middlewares`), the
+  middleware steers core's cache state (`privateCache()` + `setMaxAge()`, never on a disabled
+  state, never raising a shorter max-age) instead of writing `private, max-age=N` over it
+  ([#8](https://github.com/restruct/silverstripe-signed-asset-urls/issues/8)).
 
 ## 1.2.1 (2026-10-07)
 

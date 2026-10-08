@@ -209,4 +209,22 @@ test.describe('Cache headers', () => {
             await context.close();
         }
     });
+
+    // https://github.com/restruct/silverstripe-signed-asset-urls/issues/8 - the middleware wrote
+    // "private, max-age=N" over core's no-store, so a page that asked not to be stored was kept by
+    // the browser for as long as its signed URLs lived.
+    test('a page that asked for no-store keeps it', async ({ browser, baseURL }) => {
+        const context = await visitorContext(browser, baseURL);
+        try {
+            const page = await context.newPage();
+            const response = await openFixturePage(page, 'm', '&cache=disabled');
+            const header = response.headers()['cache-control'] ?? '';
+            expect(header).toContain('no-store');
+            expect(maxAge(header), 'no max-age on a no-store page').toBeNull();
+            // The image on it still loads, and the file keeps its own private cache headers.
+            expect(await loadedSize(page.locator('img#protected'))).toEqual({ w: 40, h: 30 });
+        } finally {
+            await context.close();
+        }
+    });
 });

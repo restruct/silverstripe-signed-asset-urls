@@ -83,6 +83,19 @@ class SignedAssetUrlCacheMiddleware implements HTTPMiddleware
         $existingHeader = $response->getHeader('Cache-Control');
 
         if ($existingHeader) {
+            # Issue #8: this middleware is registered after framework's, so it runs OUTSIDE
+            # HTTPCacheControlMiddleware, which has already written the header from its state by
+            # now. A no-store response (disableCache(), forms with a security token, the CMS, the
+            # dev environment's default) is never stored, so there is nothing to cap; appending a
+            # max-age (and a future Expires) to it only contradicted it.
+            $directives = array_map(
+                fn (string $directive) => strtolower(trim(explode('=', $directive, 2)[0])),
+                explode(',', (string) $existingHeader)
+            );
+            if (in_array('no-store', $directives, true)) {
+                return;
+            }
+
             // Parse existing max-age if present
             if (preg_match('/max-age=(\d+)/', $existingHeader, $matches)) {
                 $existingMaxAge = (int) $matches[1];
@@ -97,7 +110,28 @@ class SignedAssetUrlCacheMiddleware implements HTTPMiddleware
             }
         } else {
             // No existing Cache-Control, set a sensible default
-            $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
+            // $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
+            # Issue #8: only reached when HTTPCacheControlMiddleware has not written the header yet,
+            # ie it runs outside this one (a project that reordered Director.Middlewares) or not at
+            # all. Writing the header here replaced whatever core would write from its state after
+            # we return - it only fills empty headers. A page core sends as "no-cache, no-store,
+            # must-revalidate" (disableCache(), forms with a security token, the CMS, the dev
+            # environment's default) became cacheable by the browser for $maxAge seconds. Steer core's state instead, as forcePrivate() does,
+            # and leave a disabled state alone: a stricter state wins.
+            $cacheControl = HTTPCacheControlMiddleware::singleton();
+            if ($cacheControl->getState() !== HTTPCacheControlMiddleware::STATE_DISABLED) {
+                # Read the max-age before changing state: a page that set a shorter one keeps it.
+                $existingMaxAge = $cacheControl->getDirective('max-age');
+                # Not forced, as the header used to say "private" without forcing anything: a
+                # forced publicCache() or enableCache() keeps its state, with the max-age capped.
+                $cacheControl->privateCache();
+                if ($existingMaxAge === false || $existingMaxAge === null || (int) $existingMaxAge > $maxAge) {
+                    $cacheControl->setMaxAge($maxAge);
+                }
+            }
+            # Core writes Expires itself from the max-age it ends up with; one written here would
+            # contradict a disabled state's no-store.
+            return;
         }
 
         // Also set Expires header for older caches
