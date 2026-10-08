@@ -205,4 +205,20 @@ class SignedAssetUrlCacheMiddlewareTest extends SapphireTest
 
         $this->assertSame(10, $this->maxAge($resp), 'a shorter max-age in core\'s state is left alone');
     }
+
+    public function testKeepsAShorterMaxAgeSetOnASingleState(): void
+    {
+        # setStateDirective() sets a directive on one state only. Switching that page from public
+        # to private must carry its shorter max-age along, not end private without any.
+        $resp = $this->runWithCore(function () {
+            $this->svc()->generateSignedURL('a/b.png', 60);
+            HTTPCacheControlMiddleware::singleton()
+                ->publicCache()
+                ->setStateDirective(HTTPCacheControlMiddleware::STATE_PUBLIC, 'max-age', 10);
+            return HTTPResponse::create('body');
+        }, HTTPCacheControlMiddleware::STATE_ENABLED);
+
+        $this->assertStringContainsString('private', (string) $resp->getHeader('Cache-Control'));
+        $this->assertSame(10, $this->maxAge($resp), 'the page\'s shorter max-age survives the switch to private');
+    }
 }

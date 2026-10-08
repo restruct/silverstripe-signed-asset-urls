@@ -135,8 +135,19 @@ class SignedAssetUrlCacheMiddleware implements HTTPMiddleware
                 # Not forced, as the header used to say "private" without forcing anything: a
                 # forced publicCache() or enableCache() keeps its state, with the max-age capped.
                 $cacheControl->privateCache();
-                if ($existingMaxAge === false || $existingMaxAge === null || (int) $existingMaxAge > $maxAge) {
-                    $cacheControl->setMaxAge($maxAge);
+                // if ($existingMaxAge === false || $existingMaxAge === null || (int) $existingMaxAge > $maxAge) {
+                //     $cacheControl->setMaxAge($maxAge);
+                // }
+                # The cap is the shortest of the signed URL's lifetime and the max-age of the state
+                # the page was in. Compare it with the max-age of the state it is in NOW: a max-age
+                # set on one state only (setStateDirective()) does not follow the switch to private.
+                $cap = $maxAge;
+                if ($existingMaxAge !== false && $existingMaxAge !== null) {
+                    $cap = min($cap, (int) $existingMaxAge);
+                }
+                $currentMaxAge = $cacheControl->getDirective('max-age');
+                if ($currentMaxAge === false || $currentMaxAge === null || (int) $currentMaxAge > $cap) {
+                    $cacheControl->setMaxAge($cap);
                 }
             }
             # Core writes Expires itself from the max-age it ends up with; one written here would
