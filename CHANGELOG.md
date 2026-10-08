@@ -23,7 +23,9 @@
   A `no-store` response is now left alone. Where core has not written the header yet (it runs
   outside this module's middleware only if a project reorders `Director.Middlewares`), the
   middleware steers core's cache state (`privateCache()` + `setMaxAge()`, never on a disabled
-  state, never raising a shorter max-age) instead of writing `private, max-age=N` over it
+  state, never raising a shorter max-age) instead of writing `private, max-age=N` over it.
+  Without `HTTPCacheControlMiddleware` in the stack at all, nothing else writes the header, so
+  the middleware still writes `private, max-age=N` and `Expires` as in 1.2.1
   ([#8](https://github.com/restruct/silverstripe-signed-asset-urls/issues/8)).
 - `SignedAssetUrlVerifyTask` run in a browser wrote its messages unescaped, so the Apache hint's
   `<IfModule mod_xsendfile.c>` lines were parsed as tags and not shown. HTML output is now

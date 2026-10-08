@@ -4,6 +4,7 @@ namespace Restruct\SilverStripe\SignedAssetUrls\Tests\Middleware;
 
 use Restruct\SilverStripe\SignedAssetUrls\Middleware\SignedAssetUrlCacheMiddleware;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
+use SilverStripe\Control\Director;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Control\Middleware\HTTPCacheControlMiddleware;
@@ -89,6 +90,29 @@ class SignedAssetUrlCacheMiddlewareTest extends SapphireTest
         $this->assertNotNull($this->maxAge($resp), 'a default Cache-Control is set');
         $this->assertLessThanOrEqual(60, $this->maxAge($resp));
         $this->assertStringContainsString('private', (string) $resp->getHeader('Cache-Control'));
+    }
+
+    /**
+     * The released (1.2.1) default, for a stack without HTTPCacheControlMiddleware: nobody else
+     * writes the header, so the middleware does - "private, max-age=N" and an Expires.
+     */
+    public function testSetsDefaultWhenNoCacheControlAndCoreIsNotInTheStack(): void
+    {
+        # Director's stack without core's cache middleware (the Injector is nested per test).
+        $director = Injector::inst()->get(Director::class);
+        $director->setMiddlewares(array_filter(
+            $director->getMiddlewares(),
+            fn ($middleware) => !$middleware instanceof HTTPCacheControlMiddleware
+        ));
+
+        $resp = $this->runMw(function () {
+            $this->svc()->generateSignedURL('a/b.png', 60);
+            return HTTPResponse::create('body');
+        });
+        $this->assertNotNull($this->maxAge($resp), 'a default Cache-Control is set');
+        $this->assertLessThanOrEqual(60, $this->maxAge($resp));
+        $this->assertStringStartsWith('private', (string) $resp->getHeader('Cache-Control'));
+        $this->assertNotNull($resp->getHeader('Expires'));
     }
 
     /**

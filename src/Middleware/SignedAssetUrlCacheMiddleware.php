@@ -2,10 +2,12 @@
 
 namespace Restruct\SilverStripe\SignedAssetUrls\Middleware;
 
+use SilverStripe\Control\Director;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Control\Middleware\HTTPCacheControlMiddleware;
 use SilverStripe\Control\Middleware\HTTPMiddleware;
+use SilverStripe\Core\Injector\Injector;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 
 /**
@@ -112,13 +114,20 @@ class SignedAssetUrlCacheMiddleware implements HTTPMiddleware
         } else {
             // No existing Cache-Control, set a sensible default
             // $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
-            # Issue #8: only reached when HTTPCacheControlMiddleware has not written the header yet,
-            # ie it runs outside this one (a project that reordered Director.Middlewares) or not at
-            # all. Writing the header here replaced whatever core would write from its state after
-            # we return - it only fills empty headers. A page core sends as "no-cache, no-store,
-            # must-revalidate" (disableCache(), forms with a security token, the CMS, the dev
-            # environment's default) became cacheable by the browser for $maxAge seconds. Steer core's state instead, as forcePrivate() does,
-            # and leave a disabled state alone: a stricter state wins.
+            # Without HTTPCacheControlMiddleware in Director's stack nobody else writes the header,
+            # so the 1.2.1 default stays: there is no core state to respect.
+            if (!$this->coreCacheControlInStack()) {
+                $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
+                $response->addHeader('Expires', gmdate('D, d M Y H:i:s', $earliestExpiry) . ' GMT');
+                return;
+            }
+            # Issue #8: core is in the stack but has not written the header yet, ie it runs outside
+            # this one (a project that reordered Director.Middlewares) and writes the header from
+            # its state after we return - it only fills empty headers. Writing the header here
+            # replaced that: a page core sends as "no-cache, no-store, must-revalidate"
+            # (disableCache(), forms with a security token, the CMS, the dev environment's default)
+            # became cacheable by the browser for $maxAge seconds. Steer core's state instead, as
+            # forcePrivate() does, and leave a disabled state alone: a stricter state wins.
             $cacheControl = HTTPCacheControlMiddleware::singleton();
             if ($cacheControl->getState() !== HTTPCacheControlMiddleware::STATE_DISABLED) {
                 # Read the max-age before changing state: a page that set a shorter one keeps it.
@@ -137,5 +146,19 @@ class SignedAssetUrlCacheMiddleware implements HTTPMiddleware
 
         // Also set Expires header for older caches
         $response->addHeader('Expires', gmdate('D, d M Y H:i:s', $earliestExpiry) . ' GMT');
+    }
+
+    /**
+     * Whether Director's middleware stack has core's HTTPCacheControlMiddleware, which writes the
+     * Cache-Control header from its state.
+     */
+    protected function coreCacheControlInStack(): bool
+    {
+        foreach (Injector::inst()->get(Director::class)->getMiddlewares() as $middleware) {
+            if ($middleware instanceof HTTPCacheControlMiddleware) {
+                return true;
+            }
+        }
+        return false;
     }
 }
