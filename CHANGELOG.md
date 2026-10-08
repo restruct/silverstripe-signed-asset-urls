@@ -18,6 +18,10 @@
   middleware steers core's cache state (`privateCache()` + `setMaxAge()`, never on a disabled
   state, never raising a shorter max-age) instead of writing `private, max-age=N` over it
   ([#8](https://github.com/restruct/silverstripe-signed-asset-urls/issues/8)).
+- `SignedAssetUrlVerifyTask` run in a browser wrote its messages unescaped, so the Apache hint's
+  `<IfModule mod_xsendfile.c>` lines were parsed as tags and not shown. HTML output is now
+  escaped on both majors; terminal output is unchanged
+  ([#3](https://github.com/restruct/silverstripe-signed-asset-urls/issues/3)).
 
 ## 1.2.1 (2026-10-07)
 

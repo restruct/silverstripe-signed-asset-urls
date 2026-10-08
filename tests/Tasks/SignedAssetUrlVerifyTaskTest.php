@@ -2,6 +2,7 @@
 
 namespace Restruct\SilverStripe\SignedAssetUrls\Tests\Tasks;
 
+use ReflectionProperty;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 use Restruct\SilverStripe\SignedAssetUrls\Tasks\SignedAssetUrlVerifyTask;
 use SilverStripe\Control\HTTPRequest;
@@ -141,5 +142,59 @@ class SignedAssetUrlVerifyTaskTest extends FunctionalTest
 
         $this->assertStringContainsString('Valid signature: PASS', $out);
         $this->assertStringContainsString('=== Verification Complete ===', $out);
+    }
+
+    /**
+     * Run this major's real entry point with ASSET_FILE_SERVER=apache, rendering for a browser
+     * (HTML) or a terminal, and return what it wrote.
+     */
+    private function apacheHintOutput(bool $html): string
+    {
+        Environment::setEnv('ASSET_FILE_SERVER', 'apache');
+        $task = SignedAssetUrlVerifyTask::create();
+        try {
+            if (class_exists(PolyOutput::class)) {
+                $buffer = new BufferedOutput();
+                $output = new PolyOutput($html ? PolyOutput::FORMAT_HTML : PolyOutput::FORMAT_ANSI, wrappedOutput: $buffer);
+                $task->run(new ArrayInput([]), $output);
+                return $buffer->fetch();
+            }
+
+            # Silverstripe 5 decides by Director::is_cli(), which is always true under PHPUnit:
+            # set framework's own (internal) override for the duration of the run.
+            $isCli = new ReflectionProperty(Environment::class, 'isCliOverride');
+            $previous = $isCli->getValue();
+            $isCli->setValue(null, !$html);
+            ob_start();
+            try {
+                $task->run(new HTTPRequest('GET', 'dev/tasks/SignedAssetUrlVerifyTask'));
+            } finally {
+                $out = (string) ob_get_clean();
+                $isCli->setValue(null, $previous);
+            }
+            return $out;
+        } finally {
+            Environment::setEnv('ASSET_FILE_SERVER', 'php');
+        }
+    }
+
+    /**
+     * Issue #3: in a browser the Apache hint's "<IfModule ...>" lines were written raw and parsed
+     * as tags, so they were not visible. HTML output is escaped; terminal output stays plain.
+     */
+    public function testApacheHintIsVisibleInABrowser(): void
+    {
+        $html = $this->apacheHintOutput(true);
+        $this->assertStringContainsString('&lt;IfModule mod_xsendfile.c&gt;', $html);
+        $this->assertStringContainsString('&lt;/IfModule&gt;', $html);
+        $this->assertStringNotContainsString('<IfModule', $html, 'no raw tag left for the browser to swallow');
+        $this->assertStringContainsString('<br>', $html, 'line breaks are still HTML');
+    }
+
+    public function testApacheHintIsPlainTextInATerminal(): void
+    {
+        $cli = $this->apacheHintOutput(false);
+        $this->assertStringContainsString('<IfModule mod_xsendfile.c>', $cli);
+        $this->assertStringNotContainsString('&lt;', $cli);
     }
 }

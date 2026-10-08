@@ -4,6 +4,7 @@ namespace Restruct\SilverStripe\SignedAssetUrls\Tasks;
 
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 use SilverStripe\Control\Director;
+use SilverStripe\Core\Convert;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Dev\BuildTask;
 
@@ -222,7 +223,10 @@ class SignedAssetUrlVerifyTask extends BuildTask
      */
     protected function output(string $message, bool $newline = true): void
     {
-        echo $message;
+        // echo $message;
+        # Issue #3: messages are plain text. Echoed raw into a browser, the Apache hint's
+        # "<IfModule mod_xsendfile.c>" lines were parsed as tags and disappeared from the page.
+        echo Director::is_cli() ? $message : Convert::raw2xml($message);
         if ($newline) {
             echo Director::is_cli() ? "\n" : "<br>\n";
         }
