@@ -6,6 +6,7 @@ use ReflectionProperty;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 use SilverStripe\Assets\Dev\TestAssetStore;
 use SilverStripe\Assets\File;
+use SilverStripe\Assets\Image;
 use SilverStripe\Core\ClassInfo;
 use SilverStripe\Core\Config\Config;
 use SilverStripe\Core\Environment;
@@ -165,6 +166,149 @@ class SignedAssetUrlStagedFileTest extends FunctionalTest
 
         $response = $this->get($url);
         $this->assertNotSame(200, $response->getStatusCode(), 'an unpublished file is not served');
+    }
+
+    /**
+     * Issue #7: a CMS user previewing the draft stage renders an unpublished image through a
+     * signed URL. The image request carries no stage of its own (Versioned.use_session is false),
+     * so it is handled in the Live reading mode, where the draft-only File does not exist. The CMS
+     * user, who bypasses signing and the published-status check, must still be served it.
+     */
+    public function testUnpublishedFileIsServedToACmsUserFromTheLiveStage(): void
+    {
+        [$file, $url] = $this->draftFileWithSignedUrl('staged/draft-preview.pdf');
+        $this->assertFalse($file->isPublished(), 'precondition: the file is draft-only');
+
+        $this->logInWithPermission('ADMIN');
+        $response = $this->get($url);
+        $this->assertSame(200, $response->getStatusCode(), 'a CMS user previewing the draft is served the draft file');
+        $this->assertStringContainsString('application/pdf', (string) $response->getHeader('Content-Type'));
+    }
+
+    /**
+     * The draft lookup of #7 is for users who may view draft content only: a logged-in member
+     * without CMS permissions holding the same valid signature is not served the draft file.
+     */
+    public function testUnpublishedFileIsNotServedToAMemberWithoutCmsAccess(): void
+    {
+        [, $url] = $this->draftFileWithSignedUrl('staged/draft-member.pdf');
+
+        $this->logInWithPermission('SOME_UNRELATED_PERMISSION');
+        $response = $this->get($url);
+        $this->assertNotSame(200, $response->getStatusCode(), 'an unpublished file is not served to a non-CMS member');
+    }
+
+    /**
+     * A draft-only protected PDF with the given view rule, and a valid, unbound signed URL for its
+     * plain path and for its masked ("x{idhex}") path. Nobody is logged in afterwards.
+     *
+     * @return array{0: File, 1: string, 2: string}
+     */
+    private function draftFileWithViewRule(string $filename, string $canViewType): array
+    {
+        $file = File::create();
+        $file->setFromString("%PDF-1.4\n% fake pdf for tests\n", $filename);
+        $file->CanViewType = $canViewType;
+        $file->write();
+
+        /** @var AssetUrlSigningService $service */
+        $service = Injector::inst()->get(AssetUrlSigningService::class);
+        $plain = $service->generateSignedURL($file->getFilename(), 3600, false);
+        $masked = (string) $file->File->MaskedURL((int) $file->ID, 'm');
+        $this->assertMatchesRegularExpression('#^/signed-asset/staged/x[0-9a-f]+\.pdf\?#', $masked, 'precondition: a masked path');
+        $this->assertFalse($file->isPublished(), 'precondition: the file is draft-only');
+        $this->logOut();
+
+        return [$file, $plain, $masked];
+    }
+
+    /**
+     * A draft-only 40x30 PNG, readable by logged-in users. Nobody is logged in afterwards.
+     */
+    private function draftImage(string $filename): Image
+    {
+        $gd = imagecreatetruecolor(40, 30);
+        imagefill($gd, 0, 0, imagecolorallocate($gd, 90, 140, 200));
+        ob_start();
+        imagepng($gd);
+        $png = ob_get_clean();
+
+        $image = Image::create();
+        $image->setFromString($png, $filename);
+        $image->CanViewType = 'LoggedInUsers';
+        $image->write();
+        $this->assertFalse($image->isPublished(), 'precondition: the image is draft-only');
+        $this->logOut();
+
+        return $image;
+    }
+
+    /**
+     * The draft lookup of #7 is gated by the bypass permissions (CMS_ACCESS_CMSMain,
+     * VIEW_DRAFT_CONTENT, ...), which say nothing about THIS file. A file restricted to other
+     * users is not served to such a member - as core's own protected-asset check
+     * (FlysystemAssetStore::isGranted()) asks canView() after its draft lookup. The masked
+     * path carries the File id, so without this any id could be tried.
+     */
+    public function testDraftFileTheCmsUserMayNotViewIsNotServed(): void
+    {
+        [, $plain, $masked] = $this->draftFileWithViewRule('staged/restricted.pdf', 'OnlyTheseUsers');
+
+        $this->logInWithPermission('CMS_ACCESS_CMSMain');
+        $this->assertNotSame(200, $this->get($plain)->getStatusCode(), 'plain path');
+        $this->assertNotSame(200, $this->get($masked)->getStatusCode(), 'masked path');
+    }
+
+    public function testDraftFileTheCmsUserMayViewIsServed(): void
+    {
+        [, $restrictedPlain, $restrictedMasked] = $this->draftFileWithViewRule('staged/restricted-admin.pdf', 'OnlyTheseUsers');
+        [, $loggedInPlain, $loggedInMasked] = $this->draftFileWithViewRule('staged/logged-in.pdf', 'LoggedInUsers');
+        [, $anyonePlain] = $this->draftFileWithViewRule('staged/anyone.pdf', 'Anyone');
+
+        $this->logInWithPermission('ADMIN');
+        $this->assertSame(200, $this->get($restrictedPlain)->getStatusCode(), 'ADMIN, restricted, plain path');
+        $this->assertSame(200, $this->get($restrictedMasked)->getStatusCode(), 'ADMIN, restricted, masked path');
+
+        $this->logInWithPermission('CMS_ACCESS_CMSMain');
+        $this->assertSame(200, $this->get($loggedInPlain)->getStatusCode(), 'CMS user, LoggedInUsers, plain path');
+        $this->assertSame(200, $this->get($loggedInMasked)->getStatusCode(), 'CMS user, LoggedInUsers, masked path');
+        $this->assertSame(200, $this->get($anyonePlain)->getStatusCode(), 'CMS user, Anyone, plain path');
+    }
+
+    /**
+     * The draft lookup is for users who bypass signing only. With the published-status check
+     * switched off, nothing else would stop an anonymous holder of a valid signature from being
+     * served a file that was never published, had the lookup run for everyone.
+     */
+    public function testDraftFileIsNotFoundForAnAnonymousHolderWhenThePublishedCheckIsOff(): void
+    {
+        Config::modify()->set(AssetUrlSigningService::class, 'check_published_status', false);
+        [, $plain, $masked] = $this->draftFileWithViewRule('staged/unchecked.pdf', 'LoggedInUsers');
+
+        $this->assertSame(404, $this->get($plain)->getStatusCode(), 'plain path');
+        $this->assertSame(404, $this->get($masked)->getStatusCode(), 'masked path');
+    }
+
+    /**
+     * Issue #7 for a resized image (a variant path, "{hash}/{name}__{variant}.png"), plain and
+     * masked: a CMS user previewing the draft gets it, an anonymous holder of the URL does not.
+     */
+    public function testDraftImageVariantIsServedToACmsUserOnly(): void
+    {
+        $image = $this->draftImage('staged/draft-image.png');
+        $variant = (string) $image->ScaleWidth(20)->AutoURL('m');
+        $masked = (string) $image->MaskedScaleWidthURL(20, 'm');
+        $this->assertMatchesRegularExpression('#^/signed-asset/[0-9a-f]{10}/draft-image__#', $variant, 'precondition: a variant path');
+        $this->assertMatchesRegularExpression('#^/signed-asset/[0-9a-f]{10}/x[0-9a-f]+__#', $masked, 'precondition: a masked variant path');
+
+        $this->assertSame(404, $this->get($variant)->getStatusCode(), 'anonymous, variant');
+        $this->assertSame(404, $this->get($masked)->getStatusCode(), 'anonymous, masked variant');
+
+        $this->logInWithPermission('ADMIN');
+        $response = $this->get($variant);
+        $this->assertSame(200, $response->getStatusCode(), 'CMS user, variant');
+        $this->assertStringContainsString('image/png', (string) $response->getHeader('Content-Type'));
+        $this->assertSame(200, $this->get($masked)->getStatusCode(), 'CMS user, masked variant');
     }
 
     public function testPublishedFileIsServed(): void

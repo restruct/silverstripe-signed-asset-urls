@@ -2,6 +2,7 @@
 
 namespace Restruct\SilverStripe\SignedAssetUrls\Tasks;
 
+use SilverStripe\Core\Convert;
 use SilverStripe\PolyExecution\PolyOutput;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -50,7 +51,11 @@ if (class_exists(PolyOutput::class)) {
                 // PolyOutput renders line endings for the terminal and for HTML itself.
                 // OUTPUT_RAW: messages are plain text and carry no console formatting tags, so
                 // nothing in them (eg a path in angle brackets) is mistaken for one.
-                $output->write($message, $newline, PolyOutput::OUTPUT_RAW);
+                // $output->write($message, $newline, PolyOutput::OUTPUT_RAW);
+                # Issue #3: raw is raw in HTML too, where the Apache hint's "<IfModule ...>" lines
+                # were parsed as tags and disappeared. Escape for HTML; plain text for the terminal.
+                $output->writeForHtml(Convert::raw2xml($message), $newline, PolyOutput::OUTPUT_RAW);
+                $output->writeForAnsi($message, $newline, PolyOutput::OUTPUT_RAW);
             });
 
             // Was `return Command::SUCCESS;` unconditionally: a missing secret printed FAILED yet

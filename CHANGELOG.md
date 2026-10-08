@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.2.2 (2026-10-08)
+
+### Fixed
+
+- CMS draft preview: an unpublished image rendered through `SignedURL`/`AutoURL` answered 404,
+  also for the CMS user. The image request carries no stage and `Versioned.use_session` is false,
+  so it was handled in the Live stage, where a draft-only File does not exist. A user who may view
+  draft content (the same check that bypasses signing) now gets a second lookup in the draft
+  stage when the live one finds nothing. Visitors and members without CMS access still get 404
+  ([#7](https://github.com/restruct/silverstripe-signed-asset-urls/issues/7)).
+  Known edge case: an original replaced in draft under the same filename (not yet published) is
+  still served with its live content in the draft preview, since the live record is found first.
+  Variants are not affected: their URL carries the file hash.
+  The draft lookup serves a file only if that user may view it (`canView()`), as core's own
+  protected-asset check does: the permissions that allow draft content in general
+  (`CMS_ACCESS_CMSMain`, `VIEW_DRAFT_CONTENT`, ...) do not open a draft file restricted to other
+  users, on a plain or a masked path. Such a request answers 404.
+- A page that renders a signed URL and was sent as `no-store` (`disableCache()`, a form with a
+  security token, the CMS, the dev environment's default) got `max-age=N` and an `Expires` in the
+  future added to its `Cache-Control`, so the browser could keep it for as long as the URL lived.
+  A `no-store` response is now left alone. Where core has not written the header yet (it runs
+  outside this module's middleware only if a project reorders `Director.Middlewares`), the
+  middleware steers core's cache state (`privateCache()` + `setMaxAge()`, never on a disabled
+  state, never raising a shorter max-age) instead of writing `private, max-age=N` over it.
+  Without `HTTPCacheControlMiddleware` in the stack at all, nothing else writes the header, so
+  the middleware still writes `private, max-age=N` and `Expires` as in 1.2.1
+  ([#8](https://github.com/restruct/silverstripe-signed-asset-urls/issues/8)).
+- `SignedAssetUrlVerifyTask` run in a browser wrote its messages unescaped, so the Apache hint's
+  `<IfModule mod_xsendfile.c>` lines were parsed as tags and not shown. HTML output is now
+  escaped on both majors; terminal output is unchanged
+  ([#3](https://github.com/restruct/silverstripe-signed-asset-urls/issues/3)).
+
+### Changed
+
+- The warning for an unknown policy name in `AutoURL()`/`MaskedURL()` is logged once per name per
+  request instead of on every call, so a list of 50 files with a mistyped policy logs one line,
+  not 50. The fallback (default TTL, no session binding) is unchanged
+  ([#5](https://github.com/restruct/silverstripe-signed-asset-urls/issues/5)).
+
 ## 1.2.1 (2026-10-07)
 
 ### Security

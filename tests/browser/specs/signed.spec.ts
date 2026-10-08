@@ -104,7 +104,7 @@ test.describe('Signed URLs for a visitor', () => {
 
 test.describe('CMS users', () => {
     test('bypass the signature check', async ({ page }) => {
-        // The page's HTML only (not rendered: its draft image is the subject of the fixme below).
+        // The page's HTML only (not rendered: its draft image is the subject of the draft-preview test below).
         const html = await (await page.request.get('/sau-browser/page?policy=m')).text();
         const signed = /<img id="protected" alt="protected" src="([^"]+)"/.exec(html)![1].replace(/&amp;/g, '&');
         expect(signed).toMatch(SIGNED);
@@ -116,9 +116,11 @@ test.describe('CMS users', () => {
     // https://github.com/restruct/silverstripe-signed-asset-urls/issues/7 - the image request runs in
     // the Live reading mode (Versioned.use_session is false), so the draft File is not found: 404,
     // also for the CMS user. Measured red on SS5 and SS6 (2026-10-02).
-    test.fixme('see the unpublished image when previewing the draft stage', async ({ page }) => {
-        // ?stage=Stage puts the session in the draft reading mode, so the image request (which has
-        // no stage parameter of its own) finds the draft file; the CMS user skips the published check.
+    // Fixed: serve() looks the File up in the draft stage too for a user who may view draft content.
+    test('see the unpublished image when previewing the draft stage', async ({ page }) => {
+        // ?stage=Stage renders the page in the draft reading mode. The image request has no stage
+        // parameter of its own and Versioned.use_session is false, so it is handled in Live; the
+        // draft retry in serve() finds the file for this CMS user, who skips the published check.
         await openFixturePage(page, 'm', '&stage=Stage');
         expect(await loadedSize(page.locator('img#draft'))).toEqual({ w: 40, h: 30 });
         expect(await loadedSize(page.locator('img#protected'))).toEqual({ w: 40, h: 30 });
@@ -188,7 +190,9 @@ test.describe('Cache headers', () => {
             const page = await context.newPage();
             for (const [policy, ttl] of [['s', 30], ['m', 3600], ['l', 86400]] as const) {
                 const before = Math.floor(Date.now() / 1000);
-                const response = await openFixturePage(page, policy);
+                // A cacheable (private) page: since #8 a no-store page - which this dev-mode host
+                // sends by default - is left alone (see the next test).
+                const response = await openFixturePage(page, policy, '&cache=private');
                 const age = maxAge(response.headers()['cache-control']);
                 expect(age, `page max-age for policy ${policy}`).not.toBeNull();
                 expect(age!).toBeLessThanOrEqual(ttl);
@@ -204,6 +208,24 @@ test.describe('Cache headers', () => {
                 expect(fileAge!).toBeLessThanOrEqual(ttl);
                 expect(fileAge!).toBeGreaterThanOrEqual(ttl - 5);
             }
+        } finally {
+            await context.close();
+        }
+    });
+
+    // https://github.com/restruct/silverstripe-signed-asset-urls/issues/8 - the middleware wrote
+    // "private, max-age=N" over core's no-store, so a page that asked not to be stored was kept by
+    // the browser for as long as its signed URLs lived.
+    test('a page that asked for no-store keeps it', async ({ browser, baseURL }) => {
+        const context = await visitorContext(browser, baseURL);
+        try {
+            const page = await context.newPage();
+            const response = await openFixturePage(page, 'm', '&cache=disabled');
+            const header = response.headers()['cache-control'] ?? '';
+            expect(header).toContain('no-store');
+            expect(maxAge(header), 'no max-age on a no-store page').toBeNull();
+            // The image on it still loads, and the file keeps its own private cache headers.
+            expect(await loadedSize(page.locator('img#protected'))).toEqual({ w: 40, h: 30 });
         } finally {
             await context.close();
         }
