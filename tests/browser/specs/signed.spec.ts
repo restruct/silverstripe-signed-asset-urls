@@ -118,8 +118,9 @@ test.describe('CMS users', () => {
     // also for the CMS user. Measured red on SS5 and SS6 (2026-10-02).
     // Fixed: serve() looks the File up in the draft stage too for a user who may view draft content.
     test('see the unpublished image when previewing the draft stage', async ({ page }) => {
-        // ?stage=Stage puts the session in the draft reading mode, so the image request (which has
-        // no stage parameter of its own) finds the draft file; the CMS user skips the published check.
+        // ?stage=Stage renders the page in the draft reading mode. The image request has no stage
+        // parameter of its own and Versioned.use_session is false, so it is handled in Live; the
+        // draft retry in serve() finds the file for this CMS user, who skips the published check.
         await openFixturePage(page, 'm', '&stage=Stage');
         expect(await loadedSize(page.locator('img#draft'))).toEqual({ w: 40, h: 30 });
         expect(await loadedSize(page.locator('img#protected'))).toEqual({ w: 40, h: 30 });
