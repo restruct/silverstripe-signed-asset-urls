@@ -48,11 +48,12 @@ class SignedAssetUrlCacheMiddleware implements HTTPMiddleware
     {
         $header = (string) $response->getHeader('Cache-Control');
         if ($header === '') {
-            # No header yet: HTTPCacheControlMiddleware (outside this one) writes it from its state
-            # after we return. Steer that state instead of writing a bare "private", which would
-            # replace a stricter "no-cache, no-store" the page or core asked for. Forced, so a
-            # forced publicCache() cannot win; a forced disableCache() still does (higher level),
-            # and a page already in the disabled state is left disabled.
+            # No header yet: HTTPCacheControlMiddleware runs outside this one here (normally it
+            # runs inside and has already written the header, handled below), so it writes the
+            # header from its state after we return. Steer that state instead of writing a bare
+            # "private", which would replace a stricter "no-cache, no-store" the page or core asked
+            # for. Forced, so a forced publicCache() cannot win; a forced disableCache() still
+            # does (higher level), and a page already in the disabled state is left disabled.
             $cacheControl = HTTPCacheControlMiddleware::singleton();
             if ($cacheControl->getState() !== HTTPCacheControlMiddleware::STATE_DISABLED) {
                 $cacheControl->privateCache(true);

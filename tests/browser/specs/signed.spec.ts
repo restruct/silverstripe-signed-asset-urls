@@ -104,7 +104,7 @@ test.describe('Signed URLs for a visitor', () => {
 
 test.describe('CMS users', () => {
     test('bypass the signature check', async ({ page }) => {
-        // The page's HTML only (not rendered: its draft image is the subject of the fixme below).
+        // The page's HTML only (not rendered: its draft image is the subject of the draft-preview test below).
         const html = await (await page.request.get('/sau-browser/page?policy=m')).text();
         const signed = /<img id="protected" alt="protected" src="([^"]+)"/.exec(html)![1].replace(/&amp;/g, '&');
         expect(signed).toMatch(SIGNED);
