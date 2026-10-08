@@ -456,7 +456,11 @@ By default, this module automatically adjusts the page's `Cache-Control` headers
 **How it works:**
 1. Middleware tracks the earliest expiry time of all signed URLs generated during a request
 2. Before sending the response, it adjusts `Cache-Control: max-age` to not exceed that expiry
+   (a shorter max-age the page already has is kept)
 3. Also sets an `Expires` header for older HTTP caches
+4. A page sent as `no-store` (eg `disableCache()`, a form with a security token, the CMS, and every
+   page in the `dev` environment, where Silverstripe disables caching) is left alone: it is never
+   stored, so there is nothing to cap
 
 **Configuration:**
 
@@ -466,11 +470,16 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
   auto_cache_headers: true
 ```
 
-**Example:** If you generate a signed URL with 1-hour TTL, the page response will include:
+**Example:** If you generate a signed URL with 1-hour TTL, a page in the `live` environment with
+Silverstripe's default cache state (`enabled`) is sent with:
 ```
-Cache-Control: private, max-age=3600
+Cache-Control: no-cache, must-revalidate, max-age=3600
 Expires: Tue, 14 Jan 2026 15:30:00 GMT
 ```
+For a visitor with a session (Silverstripe then makes the page private) it is
+`Cache-Control: private, must-revalidate, max-age=3600`. The middleware only adds or lowers
+`max-age` and the `Expires` header; whether the page is public, private or not stored at all
+stays with Silverstripe's `HTTPCacheControlMiddleware` and the page itself.
 
 This ensures browsers won't serve a cached page with expired signed URLs.
 
