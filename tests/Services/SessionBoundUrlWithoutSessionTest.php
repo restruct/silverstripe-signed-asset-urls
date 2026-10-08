@@ -333,7 +333,11 @@ class SessionBoundUrlWithoutSessionTest extends SapphireTest
         ] as $state => $setCoreState) {
             AssetUrlSigningService::resetExpiryTracker();
             $header = $this->finalCacheControl(true, $setCoreState);
-            $this->assertStringContainsString('private', $header, $state);
+            // $this->assertStringContainsString('private', $header, $state);
+            # Issue #8 changed the disabled case on purpose: auto_cache_headers used to write
+            # "private, max-age=N" over core's no-store, and "private" here observed that. The
+            # disabled state is now kept (stricter than private, as without auto_cache_headers).
+            $this->assertStringContainsString($state === 'disabled' ? 'no-store' : 'private', $header, $state);
             $this->assertStringNotContainsString('public', $header, $state);
         }
     }
