@@ -197,6 +197,62 @@ class SignedAssetUrlStagedFileTest extends FunctionalTest
         $this->assertNotSame(200, $response->getStatusCode(), 'an unpublished file is not served to a non-CMS member');
     }
 
+    /**
+     * A draft-only protected PDF with the given view rule, and a valid, unbound signed URL for its
+     * plain path and for its masked ("x{idhex}") path. Nobody is logged in afterwards.
+     *
+     * @return array{0: File, 1: string, 2: string}
+     */
+    private function draftFileWithViewRule(string $filename, string $canViewType): array
+    {
+        $file = File::create();
+        $file->setFromString("%PDF-1.4\n% fake pdf for tests\n", $filename);
+        $file->CanViewType = $canViewType;
+        $file->write();
+
+        /** @var AssetUrlSigningService $service */
+        $service = Injector::inst()->get(AssetUrlSigningService::class);
+        $plain = $service->generateSignedURL($file->getFilename(), 3600, false);
+        $masked = (string) $file->File->MaskedURL((int) $file->ID, 'm');
+        $this->assertMatchesRegularExpression('#^/signed-asset/staged/x[0-9a-f]+\.pdf\?#', $masked, 'precondition: a masked path');
+        $this->assertFalse($file->isPublished(), 'precondition: the file is draft-only');
+        $this->logOut();
+
+        return [$file, $plain, $masked];
+    }
+
+    /**
+     * The draft lookup of #7 is gated by the bypass permissions (CMS_ACCESS_CMSMain,
+     * VIEW_DRAFT_CONTENT, ...), which say nothing about THIS file. A file restricted to other
+     * users is not served to such a member - as core's own protected-asset check
+     * (FlysystemAssetStore::isGranted()) asks canView() after its draft lookup. The masked
+     * path carries the File id, so without this any id could be tried.
+     */
+    public function testDraftFileTheCmsUserMayNotViewIsNotServed(): void
+    {
+        [, $plain, $masked] = $this->draftFileWithViewRule('staged/restricted.pdf', 'OnlyTheseUsers');
+
+        $this->logInWithPermission('CMS_ACCESS_CMSMain');
+        $this->assertNotSame(200, $this->get($plain)->getStatusCode(), 'plain path');
+        $this->assertNotSame(200, $this->get($masked)->getStatusCode(), 'masked path');
+    }
+
+    public function testDraftFileTheCmsUserMayViewIsServed(): void
+    {
+        [, $restrictedPlain, $restrictedMasked] = $this->draftFileWithViewRule('staged/restricted-admin.pdf', 'OnlyTheseUsers');
+        [, $loggedInPlain, $loggedInMasked] = $this->draftFileWithViewRule('staged/logged-in.pdf', 'LoggedInUsers');
+        [, $anyonePlain] = $this->draftFileWithViewRule('staged/anyone.pdf', 'Anyone');
+
+        $this->logInWithPermission('ADMIN');
+        $this->assertSame(200, $this->get($restrictedPlain)->getStatusCode(), 'ADMIN, restricted, plain path');
+        $this->assertSame(200, $this->get($restrictedMasked)->getStatusCode(), 'ADMIN, restricted, masked path');
+
+        $this->logInWithPermission('CMS_ACCESS_CMSMain');
+        $this->assertSame(200, $this->get($loggedInPlain)->getStatusCode(), 'CMS user, LoggedInUsers, plain path');
+        $this->assertSame(200, $this->get($loggedInMasked)->getStatusCode(), 'CMS user, LoggedInUsers, masked path');
+        $this->assertSame(200, $this->get($anyonePlain)->getStatusCode(), 'CMS user, Anyone, plain path');
+    }
+
     public function testPublishedFileIsServed(): void
     {
         Versioned::set_default_reading_mode('Stage.' . Versioned::DRAFT);

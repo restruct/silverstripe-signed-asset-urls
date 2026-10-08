@@ -12,6 +12,7 @@ use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Control\HTTPStreamResponse;
 use SilverStripe\Core\Injector\Injector;
+use SilverStripe\Security\Security;
 use SilverStripe\Versioned\Versioned;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 
@@ -104,6 +105,15 @@ class SignedAssetUrlController extends Controller
                 Versioned::set_stage(Versioned::DRAFT);
                 return $this->findFile($assetPath, $isVariant);
             });
+            # The bypass permissions (CMS_ACCESS_CMSMain, VIEW_DRAFT_CONTENT, ...) allow draft
+            # content in general, not this file: a draft file restricted to other users
+            # (OnlyTheseUsers) must not be handed out, and a masked path carries the File id, so
+            # ids could be tried one by one. Core's protected-asset check
+            # (FlysystemAssetStore::isGranted()) asks canView() after its draft lookup too. Not
+            # found rather than forbidden, so the answer does not reveal that the file exists.
+            if ($file && !$file->canView(Security::getCurrentUser())) {
+                $file = null;
+            }
         }
 
         if (!$file) {

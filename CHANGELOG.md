@@ -13,6 +13,10 @@
   Known edge case: an original replaced in draft under the same filename (not yet published) is
   still served with its live content in the draft preview, since the live record is found first.
   Variants are not affected: their URL carries the file hash.
+  The draft lookup serves a file only if that user may view it (`canView()`), as core's own
+  protected-asset check does: the permissions that allow draft content in general
+  (`CMS_ACCESS_CMSMain`, `VIEW_DRAFT_CONTENT`, ...) do not open a draft file restricted to other
+  users, on a plain or a masked path. Such a request answers 404.
 - A page that renders a signed URL and was sent as `no-store` (`disableCache()`, a form with a
   security token, the CMS, the dev environment's default) got `max-age=N` and an `Expires` in the
   future added to its `Cache-Control`, so the browser could keep it for as long as the URL lived.
