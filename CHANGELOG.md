@@ -10,6 +10,9 @@
   draft content (the same check that bypasses signing) now gets a second lookup in the draft
   stage when the live one finds nothing. Visitors and members without CMS access still get 404
   ([#7](https://github.com/restruct/silverstripe-signed-asset-urls/issues/7)).
+  Known edge case: an original replaced in draft under the same filename (not yet published) is
+  still served with its live content in the draft preview, since the live record is found first.
+  Variants are not affected: their URL carries the file hash.
 - A page that renders a signed URL and was sent as `no-store` (`disableCache()`, a form with a
   security token, the CMS, the dev environment's default) got `max-age=N` and an `Expires` in the
   future added to its `Cache-Control`, so the browser could keep it for as long as the URL lived.
