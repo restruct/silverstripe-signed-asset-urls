@@ -4,6 +4,7 @@ namespace Restruct\SilverStripe\SignedAssetUrls\Tests\Extensions;
 
 use Psr\Log\AbstractLogger;
 use Psr\Log\LoggerInterface;
+use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
 use SilverStripe\Assets\Dev\TestAssetStore;
 use SilverStripe\Assets\File;
 use SilverStripe\Core\Environment;
@@ -100,5 +101,37 @@ class SignedUrlUnknownPolicyTest extends SapphireTest
         $file->AutoURL();
 
         $this->assertSame([], $this->warnings());
+    }
+
+    /**
+     * Issue #5: a template rendering a list of files with a mistyped policy logged one identical
+     * warning per file. Once per policy name per request now; the fallback still applies to each.
+     */
+    public function testUnknownPolicyIsReportedOncePerNamePerRequest(): void
+    {
+        # A fresh request, as SignedAssetUrlCacheMiddleware starts each one.
+        AssetUrlSigningService::resetExpiryTracker();
+        $file = $this->protectedFile();
+
+        $urls = [];
+        for ($i = 0; $i < 5; $i++) {
+            $urls[] = (string) $file->AutoURL('typo_one');
+        }
+        $file->AutoURL('typo_two');
+        $file->AutoURL('typo_two');
+
+        foreach ($urls as $url) {
+            $this->assertStringStartsWith('/signed-asset/', $url, 'every call still falls back to a signed URL');
+            $this->assertStringNotContainsString('ss=1', $url);
+        }
+        $warnings = $this->warnings();
+        $this->assertCount(2, $warnings, 'one warning per unknown name');
+        $this->assertStringContainsString('"typo_one"', $warnings[0]);
+        $this->assertStringContainsString('"typo_two"', $warnings[1]);
+
+        # The next request reports it again.
+        AssetUrlSigningService::resetExpiryTracker();
+        $file->AutoURL('typo_one');
+        $this->assertCount(3, $this->warnings(), 'a new request warns again');
     }
 }

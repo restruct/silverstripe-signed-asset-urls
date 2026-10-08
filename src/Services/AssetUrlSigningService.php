@@ -111,6 +111,11 @@ class AssetUrlSigningService
     protected static $unboundWarningLogged = false;
 
     /**
+     * Unknown policy names already warned about during this request, as keys (issue #5)
+     */
+    protected static $unknownPolicyWarned = [];
+
+    /**
      * Generate a signed URL for an asset
      *
      * @param string $path Relative path within protected folder
@@ -453,6 +458,24 @@ class AssetUrlSigningService
         self::$earliestExpiry = null;
         self::$sessionBoundIssued = false;
         self::$unboundWarningLogged = false;
+        self::$unknownPolicyWarned = [];
+    }
+
+    /**
+     * Whether the unknown-policy warning for this name is still to be logged during this request.
+     * Answers true once per name, then false until the next request (resetExpiryTracker()).
+     *
+     * @internal Used by SignedUrlDBFileExtension; not part of the public API.
+     */
+    public static function claimUnknownPolicyWarning(string $policy): bool
+    {
+        # Issue #5: a template rendering a list of 50 files with a mistyped policy logged 50
+        # identical warnings per request. One per name says the same.
+        if (isset(self::$unknownPolicyWarned[$policy])) {
+            return false;
+        }
+        self::$unknownPolicyWarned[$policy] = true;
+        return true;
     }
 
     /**

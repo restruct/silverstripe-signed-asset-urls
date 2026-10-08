@@ -23,6 +23,13 @@
   escaped on both majors; terminal output is unchanged
   ([#3](https://github.com/restruct/silverstripe-signed-asset-urls/issues/3)).
 
+### Changed
+
+- The warning for an unknown policy name in `AutoURL()`/`MaskedURL()` is logged once per name per
+  request instead of on every call, so a list of 50 files with a mistyped policy logs one line,
+  not 50. The fallback (default TTL, no session binding) is unchanged
+  ([#5](https://github.com/restruct/silverstripe-signed-asset-urls/issues/5)).
+
 ## 1.2.1 (2026-10-07)
 
 ### Security
