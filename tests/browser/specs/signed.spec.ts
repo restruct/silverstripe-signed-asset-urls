@@ -189,7 +189,9 @@ test.describe('Cache headers', () => {
             const page = await context.newPage();
             for (const [policy, ttl] of [['s', 30], ['m', 3600], ['l', 86400]] as const) {
                 const before = Math.floor(Date.now() / 1000);
-                const response = await openFixturePage(page, policy);
+                // A cacheable (private) page: since #8 a no-store page - which this dev-mode host
+                // sends by default - is left alone (see the next test).
+                const response = await openFixturePage(page, policy, '&cache=private');
                 const age = maxAge(response.headers()['cache-control']);
                 expect(age, `page max-age for policy ${policy}`).not.toBeNull();
                 expect(age!).toBeLessThanOrEqual(ttl);

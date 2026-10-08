@@ -79,12 +79,16 @@ class SignedAssetUrlCacheMiddlewareTest extends SapphireTest
 
     public function testSetsDefaultWhenNoCacheControl(): void
     {
-        $resp = $this->runMw(function () {
+        # Issue #8 changed this on purpose: with no header yet, the middleware no longer writes
+        # "private, max-age=N" itself (that replaced core's no-store) but steers core's state, so
+        # the default now shows once core has applied it - here core's live default (enabled).
+        $resp = $this->runWithCore(function () {
             $this->svc()->generateSignedURL('a/b.png', 60);
             return HTTPResponse::create('body');
-        });
+        }, HTTPCacheControlMiddleware::STATE_ENABLED);
         $this->assertNotNull($this->maxAge($resp), 'a default Cache-Control is set');
         $this->assertLessThanOrEqual(60, $this->maxAge($resp));
+        $this->assertStringContainsString('private', (string) $resp->getHeader('Cache-Control'));
     }
 
     /**
