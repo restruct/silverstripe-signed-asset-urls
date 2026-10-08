@@ -167,6 +167,36 @@ class SignedAssetUrlStagedFileTest extends FunctionalTest
         $this->assertNotSame(200, $response->getStatusCode(), 'an unpublished file is not served');
     }
 
+    /**
+     * Issue #7: a CMS user previewing the draft stage renders an unpublished image through a
+     * signed URL. The image request carries no stage of its own (Versioned.use_session is false),
+     * so it is handled in the Live reading mode, where the draft-only File does not exist. The CMS
+     * user, who bypasses signing and the published-status check, must still be served it.
+     */
+    public function testUnpublishedFileIsServedToACmsUserFromTheLiveStage(): void
+    {
+        [$file, $url] = $this->draftFileWithSignedUrl('staged/draft-preview.pdf');
+        $this->assertFalse($file->isPublished(), 'precondition: the file is draft-only');
+
+        $this->logInWithPermission('ADMIN');
+        $response = $this->get($url);
+        $this->assertSame(200, $response->getStatusCode(), 'a CMS user previewing the draft is served the draft file');
+        $this->assertStringContainsString('application/pdf', (string) $response->getHeader('Content-Type'));
+    }
+
+    /**
+     * The draft lookup of #7 is for users who may view draft content only: a logged-in member
+     * without CMS permissions holding the same valid signature is not served the draft file.
+     */
+    public function testUnpublishedFileIsNotServedToAMemberWithoutCmsAccess(): void
+    {
+        [, $url] = $this->draftFileWithSignedUrl('staged/draft-member.pdf');
+
+        $this->logInWithPermission('SOME_UNRELATED_PERMISSION');
+        $response = $this->get($url);
+        $this->assertNotSame(200, $response->getStatusCode(), 'an unpublished file is not served to a non-CMS member');
+    }
+
     public function testPublishedFileIsServed(): void
     {
         Versioned::set_default_reading_mode('Stage.' . Versioned::DRAFT);

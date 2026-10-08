@@ -90,17 +90,20 @@ class SignedAssetUrlController extends Controller
         $isVariant = $this->isVariantPath($assetPath);
 
         // Find the original File record.
-        if ($isVariant) {
-            $file = $this->findFileByVariantPath($assetPath);
-        } else {
-            // A masked ORIGINAL path ("{folder}/x{idhex}.{ext}") carries the File
-            // id in place of the real name — produced when ScaleWidth()/etc.
-            // returns the original unchanged (source <= target, so no variant).
-            // The variant branch only de-masks hash-prefixed variant paths, so
-            // resolve the masked original by its embedded id here; fall back to a
-            // real filename lookup for genuinely-unmasked originals.
-            $file = $this->findFileByMaskedOriginalPath($assetPath)
-                ?? File::get()->filter('FileFilename', $assetPath)->first();
+        $file = $this->findFile($assetPath, $isVariant);
+
+        # Issue #7: the lookup above runs in the request's reading mode. A signed-asset request
+        # carries no stage of its own and Versioned.use_session is false by default, so it is
+        # handled in the Live stage, where a file that exists only in draft is not found - also
+        # when a CMS user rendered its URL while previewing the draft stage. A user who may view
+        # draft content (the same check that bypasses signing and the published-status check
+        # below) gets a second lookup in the draft stage. Everyone else keeps the live lookup and
+        # its 404. Live first, so whatever is served today is still served the same.
+        if (!$file && $signingService->canBypassSigning() && $this->fileHasStages()) {
+            $file = Versioned::withVersionedMode(function () use ($assetPath, $isVariant) {
+                Versioned::set_stage(Versioned::DRAFT);
+                return $this->findFile($assetPath, $isVariant);
+            });
         }
 
         if (!$file) {
@@ -138,6 +141,37 @@ class SignedAssetUrlController extends Controller
 
         // Serve the file (pass variantPath for variants, null for originals)
         return $this->serveFile($file, $isVariant ? $servePath : null, $expires, $signingService, $forceAttachment);
+    }
+
+    /**
+     * Find the original File record for a requested (original or variant) path, in the current
+     * reading mode.
+     */
+    protected function findFile(string $assetPath, bool $isVariant): ?File
+    {
+        if ($isVariant) {
+            return $this->findFileByVariantPath($assetPath);
+        }
+
+        // A masked ORIGINAL path ("{folder}/x{idhex}.{ext}") carries the File
+        // id in place of the real name — produced when ScaleWidth()/etc.
+        // returns the original unchanged (source <= target, so no variant).
+        // The variant branch only de-masks hash-prefixed variant paths, so
+        // resolve the masked original by its embedded id here; fall back to a
+        // real filename lookup for genuinely-unmasked originals.
+        return $this->findFileByMaskedOriginalPath($assetPath)
+            ?? File::get()->filter('FileFilename', $assetPath)->first();
+    }
+
+    /**
+     * Whether File has draft and live stages, ie whether a file can exist in draft only.
+     */
+    protected function fileHasStages(): bool
+    {
+        # silverstripe/versioned is optional (see the isPublished() guard in serve()), and in the
+        # versioning-only form there is a single stage, so a second lookup would find nothing new.
+        $file = File::singleton();
+        return class_exists(Versioned::class) && $file->hasExtension(Versioned::class) && $file->hasStages();
     }
 
     /**

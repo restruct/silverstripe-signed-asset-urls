@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.2 (unreleased)
+
+### Fixed
+
+- CMS draft preview: an unpublished image rendered through `SignedURL`/`AutoURL` answered 404,
+  also for the CMS user. The image request carries no stage and `Versioned.use_session` is false,
+  so it was handled in the Live stage, where a draft-only File does not exist. A user who may view
+  draft content (the same check that bypasses signing) now gets a second lookup in the draft
+  stage when the live one finds nothing. Visitors and members without CMS access still get 404
+  ([#7](https://github.com/restruct/silverstripe-signed-asset-urls/issues/7)).
+
 ## 1.2.1 (2026-10-07)
 
 ### Security

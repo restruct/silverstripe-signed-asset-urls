@@ -116,7 +116,8 @@ test.describe('CMS users', () => {
     // https://github.com/restruct/silverstripe-signed-asset-urls/issues/7 - the image request runs in
     // the Live reading mode (Versioned.use_session is false), so the draft File is not found: 404,
     // also for the CMS user. Measured red on SS5 and SS6 (2026-10-02).
-    test.fixme('see the unpublished image when previewing the draft stage', async ({ page }) => {
+    // Fixed: serve() looks the File up in the draft stage too for a user who may view draft content.
+    test('see the unpublished image when previewing the draft stage', async ({ page }) => {
         // ?stage=Stage puts the session in the draft reading mode, so the image request (which has
         // no stage parameter of its own) finds the draft file; the CMS user skips the published check.
         await openFixturePage(page, 'm', '&stage=Stage');
