@@ -483,6 +483,14 @@ For a visitor with a session (Silverstripe then makes the page private) it is
 `max-age` and the `Expires` header; whether the page is public, private or not stored at all
 stays with Silverstripe's `HTTPCacheControlMiddleware` and the page itself.
 
+**Pages marked public** (`publicCache()`, eg for a CDN or Varnish) stay public, with `max-age`
+capped to the signed URL's lifetime (with the default middleware order; if a project moves
+`HTTPCacheControlMiddleware` outside this one, only a forced `publicCache(true)` stays public). A shared cache then serves the same page, with the same
+signed URL, to every visitor until it expires. That is intended: the URL gives no more access than
+the page itself, which anyone could already request. Only mark a page public if it is the same for
+every visitor; a page that shows per-user links belongs in `privateCache()` (session-bound URLs
+make the page private automatically, see above).
+
 This ensures browsers won't serve a cached page with expired signed URLs.
 
 ### Disabling Auto Cache Headers
