@@ -10,7 +10,7 @@ Time-expiring signed URLs for protected SilverStripe assets, similar to Amazon S
 - **Time-limited URLs**: Assets are only accessible for a configurable duration
 - **Session binding**: Optionally restrict URLs to the session that created them
 - **HMAC-SHA256 signing**: Cryptographically secure URL signatures
-- **Admin bypass**: Logged-in CMS users can access assets without signing
+- **Admin bypass**: Logged-in CMS users can access the assets they may view (`canView()`) without signing
 - **Configurable TTL**: Default and per-URL time-to-live settings
 - **SilverStripe integration**: Uses SilverStripe's AssetStore for file resolution (works with hash-based paths)
 
@@ -83,6 +83,8 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
 
   # Permissions that bypass signing (default: uses Versioned::$non_live_permissions)
   # This typically includes CMS_ACCESS_*, VIEW_DRAFT_CONTENT, etc.
+  # The bypass covers only files the user may view (File::canView()); see
+  # "CMS users and bypass_permissions" below.
   # Set to custom array to override:
   # bypass_permissions:
   #   - 'ADMIN'
@@ -444,7 +446,7 @@ SilverStripe\Control\Session:
 2. **Request**: User requests the signed URL
 3. **Validation**: Controller validates hash and checks expiry
 4. **Session Check**: If URL is session-bound, validates against current session
-5. **Admin Check**: If user has CMS access, signature validation is bypassed
+5. **Admin Check**: If user has CMS access and may view the file (`canView()`), signature validation is bypassed
 6. **Serving**: File is streamed via SilverStripe's AssetStore (handles hash-based paths automatically)
 
 ## Browser & Page Caching
@@ -628,7 +630,25 @@ When a signed URL is accessed, the controller validates:
 2. **Session binding**: If URL is session-bound, validates current session
 3. **Published status** (optional): If `check_published_status` is enabled, denies access to unpublished files
 
-CMS users with `bypass_permissions` can always access any file.
+### CMS users and `bypass_permissions`
+
+A user holding one of the `bypass_permissions` is served a file without a signature only when
+`$file->canView($member)` is true, both for published files and (in the CMS draft preview) for
+draft-only ones. This follows core: `ProtectedFileController` serves a protected file only on a
+session grant or on `File::canView()` (`FlysystemAssetStore::isGranted()`), never on a CMS
+permission as such.
+
+A bypass user whom `canView()` does not cover (eg a file set to `OnlyTheseUsers` for groups they
+are not in) is handled like any other visitor:
+
+- without a valid signature the request answers **404**, as core's protected-asset check does, so
+  the status code does not reveal that the file exists;
+- with a valid signature the file is served, after the same published-status check as for
+  everyone else, exactly as it would be for an anonymous holder of the same link.
+
+Members with `ADMIN` pass `File::canView()` for every file, so nothing changes for them.
+
+Before 1.3.0 any bypass user was served any published file, whatever its `canView()`.
 
 ### Projects with staging disabled (on File assets)
 

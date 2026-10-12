@@ -44,6 +44,12 @@ class SignedAssetUrlController extends Controller
     ];
 
     /**
+     * Whether the current request is served on the bypass permissions rather than on a signature.
+     * Set by serve(); null outside it (see isServedWithoutSignature()).
+     */
+    protected ?bool $servedWithoutSignature = null;
+
+    /**
      * Serve a signed asset
      *
      * URL format: /signed-asset/{path}?s={hash}&e={expires}&ss={session_bound}
@@ -66,7 +72,12 @@ class SignedAssetUrlController extends Controller
         $signingService = Injector::inst()->get(AssetUrlSigningService::class);
 
         // Check if user can bypass signing (admin/CMS users)
-        if (!$signingService->canBypassSigning()) {
+        $canBypass = $signingService->canBypassSigning();
+        # Whether this request is served on the bypass permissions instead of a signature. Starts
+        # out as "may bypass" and is withdrawn below (issue #11) when the file turns out to be one
+        # this user may not view. Read by the cache headers and the published-status check.
+        $this->servedWithoutSignature = $canBypass;
+        if (!$canBypass) {
             // Validate signature against the path
             $validation = $signingService->validateSignature($hash, $expires, $assetPath, $sessionBound);
 
@@ -93,6 +104,28 @@ class SignedAssetUrlController extends Controller
         // Find the original File record.
         $file = $this->findFile($assetPath, $isVariant);
 
+        # Issue #11: the bypass permissions (Versioned.non_live_permissions by default:
+        # CMS_ACCESS_LeftAndMain, VIEW_DRAFT_CONTENT, ...) say a user may see CMS and draft content
+        # in general, not that they may see THIS file. Core never lets those permissions open a
+        # protected file: ProtectedFileController hands the request to
+        # FlysystemAssetStore::getResponseFor(), which serves a protected file only when
+        # isGranted() says so, and isGranted() answers from a session grant (issued by
+        # File::getURL() to a user who could view the file when the URL was rendered) or else from
+        # File::canView($member) - no permission check of its own. The signature is this module's
+        # grant, so the bypass now stands in for the signature only when canView() agrees. A user
+        # it does not cover is treated as any other visitor: a valid signature still serves the
+        # file, as it would for an anonymous holder of the same link.
+        if ($canBypass && $file && !$file->canView(Security::getCurrentUser())) {
+            $this->servedWithoutSignature = false;
+            # Not found rather than forbidden or expired: a CMS user must not learn from the
+            # status code that a file they may not view exists (a masked path carries the File
+            # id, so ids could be tried one by one). Same answer as the draft lookup below, and as
+            # core's (FlysystemAssetStore.denied_response_code defaults to 404).
+            if ($signingService->validateSignature($hash, $expires, $assetPath, $sessionBound) !== true) {
+                return $this->httpError(404, 'File not found');
+            }
+        }
+
         # Issue #7: the lookup above runs in the request's reading mode. A signed-asset request
         # carries no stage of its own and Versioned.use_session is false by default, so it is
         # handled in the Live stage, where a file that exists only in draft is not found - also
@@ -100,7 +133,7 @@ class SignedAssetUrlController extends Controller
         # draft content (the same check that bypasses signing and the published-status check
         # below) gets a second lookup in the draft stage. Everyone else keeps the live lookup and
         # its 404. Live first, so whatever is served today is still served the same.
-        if (!$file && $signingService->canBypassSigning() && $this->fileHasStages()) {
+        if (!$file && $canBypass && $this->fileHasStages()) {
             $file = Versioned::withVersionedMode(function () use ($assetPath, $isVariant) {
                 Versioned::set_stage(Versioned::DRAFT);
                 return $this->findFile($assetPath, $isVariant);
@@ -128,7 +161,9 @@ class SignedAssetUrlController extends Controller
         // default config (check_published_status: true). With no versioning there is no draft
         // state, so every file counts as published - the same guard requiresSignedURL() in
         // SignedUrlDBFileExtension already applies.
-        if ($signingService->shouldCheckPublishedStatus() && !$signingService->canBypassSigning()) {
+        # A bypass user served on a signature (issue #11) gets the same published-status check as
+        # every other signature holder.
+        if ($signingService->shouldCheckPublishedStatus() && !$this->servedWithoutSignature) {
             if ($file->hasExtension(Versioned::class) && !$file->isPublished()) {
                 return $this->httpError(403, 'File not available');
             }
@@ -151,6 +186,18 @@ class SignedAssetUrlController extends Controller
 
         // Serve the file (pass variantPath for variants, null for originals)
         return $this->serveFile($file, $isVariant ? $servePath : null, $expires, $signingService, $forceAttachment);
+    }
+
+    /**
+     * Whether the current request is served on the bypass permissions rather than on a signature
+     * (no signature-based Cache-Control then, no published-status check).
+     *
+     * Falls back to canBypassSigning() when serve() has not decided, so a subclass calling the
+     * response builders directly keeps the pre-1.3 behaviour.
+     */
+    protected function isServedWithoutSignature(AssetUrlSigningService $signingService): bool
+    {
+        return $this->servedWithoutSignature ?? $signingService->canBypassSigning();
     }
 
     /**
@@ -567,7 +614,7 @@ class SignedAssetUrlController extends Controller
         $response->addHeader('Content-Type', $mimeType);
 
         // Add cache headers for signed URLs (can be cached until expiry)
-        if (!$signingService->canBypassSigning()) {
+        if (!$this->isServedWithoutSignature($signingService)) {
             $maxAge = max(0, $expires - time());
             $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
         }
@@ -689,7 +736,7 @@ class SignedAssetUrlController extends Controller
         $response->addHeader('Content-Type', $mimeType);
 
         // Cache headers
-        if (!$signingService->canBypassSigning()) {
+        if (!$this->isServedWithoutSignature($signingService)) {
             $maxAge = max(0, $expires - time());
             $response->addHeader('Cache-Control', "private, max-age={$maxAge}");
         }

@@ -14,6 +14,7 @@ use SilverStripe\Core\Extension;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Dev\FunctionalTest;
 use SilverStripe\ORM\DataObject;
+use SilverStripe\Security\Security;
 use SilverStripe\Versioned\Versioned;
 
 /**
@@ -309,6 +310,137 @@ class SignedAssetUrlStagedFileTest extends FunctionalTest
         $this->assertSame(200, $response->getStatusCode(), 'CMS user, variant');
         $this->assertStringContainsString('image/png', (string) $response->getHeader('Content-Type'));
         $this->assertSame(200, $this->get($masked)->getStatusCode(), 'CMS user, masked variant');
+    }
+
+    /**
+     * A PUBLISHED protected PDF with the given view rule. Returns the File, a valid unbound signed
+     * URL for its plain path and for its masked ("x{idhex}") path, and both paths without any
+     * signature (what a user who bypasses signing may request). Nobody is logged in afterwards.
+     *
+     * @return array{0: File, 1: string, 2: string, 3: string, 4: string}
+     */
+    private function publishedFileWithViewRule(string $filename, string $canViewType): array
+    {
+        $file = File::create();
+        $file->setFromString("%PDF-1.4\n% fake pdf for tests\n", $filename);
+        $file->CanViewType = $canViewType;
+        $file->write();
+        $file->publishSingle();
+        $this->assertTrue($file->isPublished(), 'precondition: the file is published');
+
+        /** @var AssetUrlSigningService $service */
+        $service = Injector::inst()->get(AssetUrlSigningService::class);
+        $plain = $service->generateSignedURL($file->getFilename(), 3600, false);
+        $masked = (string) $file->File->MaskedURL((int) $file->ID, 'm');
+        $this->assertMatchesRegularExpression('#^/signed-asset/staged/x[0-9a-f]+\.pdf\?#', $masked, 'precondition: a masked path');
+        $this->logOut();
+
+        return [$file, $plain, $masked, strtok($plain, '?'), strtok($masked, '?')];
+    }
+
+    /**
+     * Log in a member who holds only CMS_ACCESS_CMSMain (one of the default bypass permissions,
+     * Versioned.non_live_permissions) and check the preconditions of the issue #11 tests: this
+     * member bypasses signing, and may or may not view the given file.
+     */
+    private function logInAsCmsUser(File $file, bool $expectCanView): void
+    {
+        $this->logInWithPermission('CMS_ACCESS_CMSMain');
+        /** @var AssetUrlSigningService $service */
+        $service = Injector::inst()->get(AssetUrlSigningService::class);
+        $this->assertTrue($service->canBypassSigning(), 'precondition: the CMS user bypasses signing');
+        $this->assertSame(
+            $expectCanView,
+            (bool) File::get()->byID($file->ID)->canView(Security::getCurrentUser()),
+            'precondition: canView() of the file for the CMS user'
+        );
+    }
+
+    /**
+     * Issue #11: a user holding a bypass permission was served a PUBLISHED file without a
+     * signature also when File::canView() said no. Core serves a protected file only on a session
+     * grant or canView() (FlysystemAssetStore::isGranted()), never on these permissions, so
+     * neither may this module. Answers 404, as core does, so the status does not reveal the file.
+     */
+    public function testPublishedFileTheCmsUserMayNotViewIsNotServedWithoutSignature(): void
+    {
+        [$file, $plain, , $plainBare, $maskedBare] = $this->publishedFileWithViewRule('staged/live-restricted.pdf', 'OnlyTheseUsers');
+
+        $this->logInAsCmsUser($file, false);
+        $this->assertSame(404, $this->get($plainBare)->getStatusCode(), 'plain path, no signature');
+        $this->assertSame(404, $this->get($maskedBare)->getStatusCode(), 'masked path, no signature');
+        $tampered = preg_replace('/([?&]s=)[^&]+/', '$1' . str_repeat('0', 64), $plain);
+        $this->assertSame(404, $this->get($tampered)->getStatusCode(), 'plain path, invalid signature');
+    }
+
+    /**
+     * Issue #11 for a resized image (a variant path) of a published restricted image.
+     */
+    public function testPublishedImageVariantTheCmsUserMayNotViewIsNotServedWithoutSignature(): void
+    {
+        $image = $this->draftImage('staged/live-restricted-image.png');
+        $image->CanViewType = 'OnlyTheseUsers';
+        $image->write();
+        $image->publishSingle();
+        $variant = strtok((string) $image->ScaleWidth(20)->AutoURL('m'), '?');
+        $masked = strtok((string) $image->MaskedScaleWidthURL(20, 'm'), '?');
+        $this->assertMatchesRegularExpression('#^/signed-asset/[0-9a-f]{10}/live-restricted-image__#', $variant, 'precondition: a variant path');
+        $this->logOut();
+
+        $this->logInAsCmsUser($image, false);
+        $this->assertSame(404, $this->get($variant)->getStatusCode(), 'variant, no signature');
+        $this->assertSame(404, $this->get($masked)->getStatusCode(), 'masked variant, no signature');
+    }
+
+    /**
+     * The other side of issue #11: where canView() agrees, the bypass still stands in for the
+     * signature on the live path.
+     */
+    public function testPublishedFileTheCmsUserMayViewIsServedWithoutSignature(): void
+    {
+        [$loggedIn, , , $loggedInBare, $loggedInMaskedBare] = $this->publishedFileWithViewRule('staged/live-logged-in.pdf', 'LoggedInUsers');
+        [, , , $restrictedBare, $restrictedMaskedBare] = $this->publishedFileWithViewRule('staged/live-restricted-admin.pdf', 'OnlyTheseUsers');
+
+        $this->logInAsCmsUser($loggedIn, true);
+        $this->assertSame(200, $this->get($loggedInBare)->getStatusCode(), 'CMS user, LoggedInUsers, plain path');
+        $this->assertSame(200, $this->get($loggedInMaskedBare)->getStatusCode(), 'CMS user, LoggedInUsers, masked path');
+
+        # File::canView() is true for ADMIN whatever the view rule.
+        $this->logInWithPermission('ADMIN');
+        $this->assertSame(200, $this->get($restrictedBare)->getStatusCode(), 'ADMIN, OnlyTheseUsers, plain path');
+        $this->assertSame(200, $this->get($restrictedMaskedBare)->getStatusCode(), 'ADMIN, OnlyTheseUsers, masked path');
+    }
+
+    /**
+     * A bypass user whom canView() does not cover is treated as any other visitor, not refused
+     * outright: a valid signature serves the file, as it would for an anonymous holder of the
+     * same link (the signature is this module's grant, like core's session grant).
+     */
+    public function testPublishedFileTheCmsUserMayNotViewIsServedOnAValidSignature(): void
+    {
+        [$file, $plain, $masked] = $this->publishedFileWithViewRule('staged/live-restricted-signed.pdf', 'OnlyTheseUsers');
+
+        $this->assertSame(200, $this->get($plain)->getStatusCode(), 'precondition: an anonymous holder is served');
+
+        $this->logInAsCmsUser($file, false);
+        $this->assertSame(200, $this->get($plain)->getStatusCode(), 'CMS user, valid signature, plain path');
+        $this->assertSame(200, $this->get($masked)->getStatusCode(), 'CMS user, valid signature, masked path');
+    }
+
+    /**
+     * On the signature path a bypass user also gets the published-status check, as every other
+     * signature holder does. On a site whose front end reads the draft stage, the first lookup
+     * finds a draft-only file; one the CMS user may not view was served to them before #11 (the
+     * bypass skipped both the signature and the published-status check).
+     */
+    public function testCmsUserOnASignatureIsServedOnlyWhatAnyHolderIsServed(): void
+    {
+        Versioned::set_default_reading_mode('Stage.' . Versioned::DRAFT);
+        [$file, $plain] = $this->draftFileWithViewRule('staged/draft-restricted-signed.pdf', 'OnlyTheseUsers');
+
+        $this->assertSame(403, $this->get($plain)->getStatusCode(), 'precondition: an anonymous holder is refused the draft file');
+        $this->logInAsCmsUser($file, false);
+        $this->assertNotSame(200, $this->get($plain)->getStatusCode(), 'CMS user, valid signature, draft-only file');
     }
 
     public function testPublishedFileIsServed(): void

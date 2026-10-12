@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- A CMS user holding a `bypass_permissions` permission (by default `Versioned.non_live_permissions`:
+  `CMS_ACCESS_LeftAndMain`, `CMS_ACCESS_CMSMain`, `VIEW_DRAFT_CONTENT`, `CAN_DEV_BUILD`) is served a
+  published file without a signature only when `File::canView()` allows it, as core's own
+  protected-asset check (`FlysystemAssetStore::isGranted()`) does. Before, such a user got every
+  published file, also one restricted to other users (eg `OnlyTheseUsers`). A bypass user who may
+  not view the file is now handled like any other visitor: 404 without a valid signature (so the
+  status does not reveal the file), served on a valid one after the usual published-status check.
+  `ADMIN` passes `canView()` for every file and is not affected. Behaviour change, hence a minor
+  release ([#11](https://github.com/restruct/silverstripe-signed-asset-urls/issues/11)).
+
 ## 1.2.2 (2026-10-08)
 
 ### Fixed
