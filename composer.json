@@ -3,6 +3,13 @@
     "description": "Time-expiring signed URLs for SilverStripe assets",
     "type": "silverstripe-vendormodule",
     "license": "MIT",
+    "authors": [
+        {
+            "name": "Restruct",
+            "email": "dev@restruct.nl",
+            "homepage": "https://restruct.nl"
+        }
+    ],
     "keywords": [
         "silverstripe",
         "assets",
