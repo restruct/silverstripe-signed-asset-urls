@@ -1,6 +1,6 @@
 {
     "name": "restruct/silverstripe-signed-asset-urls",
-    "description": "Time-expiring signed URLs for SilverStripe assets",
+    "description": "Time-limited signed URLs for protected Silverstripe files, shareable or bound to the visitor's session, served by PHP, X-Accel-Redirect or X-Sendfile",
     "type": "silverstripe-vendormodule",
     "license": "MIT",
     "authors": [
@@ -12,9 +12,11 @@
     ],
     "keywords": [
         "silverstripe",
+        "silverstripe-module",
         "assets",
+        "file-protection",
         "signed-urls",
-        "protected",
+        "presigned-urls",
         "x-accel-redirect",
         "x-sendfile"
     ],

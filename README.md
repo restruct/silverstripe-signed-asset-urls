@@ -1,11 +1,24 @@
-# Signed Protected Asset URLs for SilverStripe
+# Signed asset URLs for Silverstripe
+
+Hand out links to protected Silverstripe files that work for a limited time, for anyone who holds
+them: in an email, a download button for anonymous visitors, another app. Each URL carries an
+HMAC signature and an expiry, like an Amazon S3 pre-signed URL, and can optionally be tied to the
+visitor's session. Files are still resolved through Silverstripe's asset store, and can be handed
+to nginx or Apache to send. For Silverstripe 5 and 6.
 
 *Maintained by [Restruct](https://github.com/restruct). If this module saves you time, you can
 [support ongoing maintenance](https://github.com/sponsors/restruct).*
 
-Time-expiring signed URLs for protected SilverStripe assets, similar to Amazon S3 pre-signed URLs.
+## A protected file only opens for a session that was granted it
 
-## Features
+Silverstripe serves a protected file (restricted to some users, or not yet published) only to a
+request whose session holds a grant for it, which the page that rendered the file's URL gave that
+session, or to a member whose `File::canView()` allows it. The URL itself carries nothing. Copied
+into an email, opened in another browser, or fetched by a visitor who never saw that page, it
+answers 404. There is no way to say "this link works for the next hour", short of making the file
+public.
+
+## Time-limited links, signed with a secret
 
 - **Time-limited URLs**: Assets are only accessible for a configurable duration
 - **Session binding**: Optionally restrict URLs to the session that created them
@@ -13,260 +26,23 @@ Time-expiring signed URLs for protected SilverStripe assets, similar to Amazon S
 - **Admin bypass**: Logged-in CMS users can access the assets they may view (`canView()`) without signing
 - **Configurable TTL**: Default and per-URL time-to-live settings
 - **SilverStripe integration**: Uses SilverStripe's AssetStore for file resolution (works with hash-based paths)
-
-## Version Compatibility
-
-| Branch | Module version | Silverstripe | PHP |
-|--------|----------------|--------------|-----|
-| `main` | `1.2.x` | 5, 6 | 8.1+ (8.3+ on Silverstripe 6) |
-| - (tags only) | `1.0` - `1.1.x` | 5 | 8.1+ |
-
-`composer.json` is the source of truth for exact constraints. See [CHANGELOG.md](CHANGELOG.md) and,
-when upgrading from 1.1, [UPGRADING.md](UPGRADING.md).
-
-## Requirements and installation
-
-- Silverstripe 5 or 6 (`silverstripe/framework` and `silverstripe/assets`), PHP 8.1+
-- Optional: `silverstripe/versioned` (installed with `silverstripe/recipe-cms`). Without it files
-  have no draft state, so only their view permissions decide whether a URL is signed.
-- Local filesystem asset storage. Remote storage (S3 and similar) should use that provider's own
-  pre-signed URLs instead.
-
-```bash
-composer require restruct/silverstripe-signed-asset-urls
-```
-
-Then set `ASSET_SIGNING_SECRET` (below) and flush (`sake dev/build flush=1` on Silverstripe 5,
-`sake db:build --flush` on 6). The module adds no database tables.
-
-## Configuration
-
-### Environment Variables
-
-Add to your `.env` file:
-
-```bash
-# Required: Secret key for signing URLs (use a long random string)
-ASSET_SIGNING_SECRET="your-secret-key-min-32-characters-recommended"
-```
-
-Any long random string will do. To generate one:
-
-```bash
-openssl rand -hex 32
-```
-
-Silverstripe's own token generator works too, and prints a 40-character token:
-`vendor/bin/sake generatesecuretoken` on Silverstripe 6, `vendor/bin/sake dev/generatesecuretoken`
-on 5. On 5 it wraps the token in a `Security: token:` YAML snippet; copy only the token into
-`ASSET_SIGNING_SECRET`. Use a secret of its own for this module rather than reusing another one:
-changing it invalidates every signed URL already handed out, and nothing else.
-
-### SilverStripe Config
-
-Create `app/_config/signed-asset-urls.yml` to override defaults:
-
-```yaml
-Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
-  # Default TTL in seconds (default: 3600 = 1 hour)
-  default_ttl: 3600
-
-  # Bind URLs to user session by default (default: false)
-  bind_to_session: false
-
-  # Automatically adjust page Cache-Control headers based on signed URL TTLs (default: true)
-  auto_cache_headers: true
-
-  # Check if files are published before serving - respects Versioned staging (default: true)
-  # Set to false if you don't use Versioned staging on files
-  check_published_status: true
-
-  # Permissions that bypass signing (default: uses Versioned::$non_live_permissions)
-  # This typically includes CMS_ACCESS_*, VIEW_DRAFT_CONTENT, etc.
-  # The bypass covers only files the user may view (File::canView()); see
-  # "CMS users and bypass_permissions" below.
-  # Set to custom array to override:
-  # bypass_permissions:
-  #   - 'ADMIN'
-  #   - 'CMS_ACCESS_AssetAdmin'
-```
-
-All configuration options have sensible defaults - you typically only need to set `ASSET_SIGNING_SECRET` in `.env` to get started.
-
-## Web Server Configuration (Optional)
-
-By default, files are served via PHP streaming. For better performance on high-traffic sites, you can enable web server file handoff using X-Sendfile (Apache) or X-Accel-Redirect (Nginx).
-
-### Environment Variable
-
-Add to your `.env` file:
-
-```bash
-# File serving method: 'php' (default), 'apache', or 'nginx'
-ASSET_FILE_SERVER=php
-```
-
-### Nginx (X-Accel-Redirect)
-
-**How it works:** PHP validates the signed URL, then sends an `X-Accel-Redirect` header pointing to an internal nginx location. Nginx intercepts this and serves the file directly from disk, bypassing PHP for the actual file transfer.
-
-#### Setup
-
-1. Set `ASSET_FILE_SERVER=nginx` in `.env`
-
-2. Add an `internal` location block to your nginx server config (see examples below)
-
-3. Run the verification task to confirm your setup:
-   ```bash
-   vendor/bin/sake tasks:SignedAssetUrlVerifyTask        # Silverstripe 6
-   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask    # Silverstripe 5
-   ```
-
-#### How the location path is determined
-
-The module derives the location from `basename(SS_PROTECTED_ASSETS_PATH)`:
-
-| `SS_PROTECTED_ASSETS_PATH` | X-Accel-Redirect header | Required nginx location |
-|---|---|---|
-| _(not set, default `.protected`)_ | `/.protected/Uploads/abc123/file.pdf` | `/.protected/` |
-| `../restricted_assets` | `/restricted_assets/Uploads/abc123/file.pdf` | `/restricted_assets/` |
-| `/var/www/project/protected_assets` | `/protected_assets/Uploads/abc123/file.pdf` | `/protected_assets/` |
-
-**The location path must match the basename exactly.** A common mistake is using the wrong folder name (e.g., `/protected_assets/` when the env var resolves to a folder named `restricted_assets`).
-
-#### `root` vs `alias`
-
-Both work, but `root` is recommended — it's more portable:
-
-- **`root`** — nginx **appends** the full URI to the root path. Point `root` at the **parent** of the protected folder:
-  ```
-  location /restricted_assets/ + root .../current
-  → .../current/restricted_assets/Uploads/abc123/file.pdf  ✓
-  ```
-- **`alias`** — nginx **replaces** the location prefix with the alias path. Point `alias` at the **exact** folder (trailing slash required):
-  ```
-  location /restricted_assets/ + alias .../current/restricted_assets/
-  → .../current/restricted_assets/Uploads/abc123/file.pdf  ✓
-  ```
-
-With `root`, if you rename the folder, you only change the location — not the root. With `alias`, you repeat the full path. Either way, the path must be absolute — nginx does not resolve `..`.
-
-**Common mistake — `root` pointing to the folder itself:**
-```
-# WRONG: root points to the folder → path doubled!
-location /restricted_assets/ + root .../current/restricted_assets
-→ .../current/restricted_assets/restricted_assets/file.pdf  ✗
-```
-
-#### Can I reuse the server root?
-
-No. The `server { root ... }` points to the public webroot (e.g., `.../current/public`), but protected assets live **outside** `public/` as a sibling (e.g., `.../current/restricted_assets`). Nginx does not resolve `..` in `root`/`alias` directives, so you need a separate absolute path.
-
-#### Configuration examples
-
-**Default setup** (`.protected` inside `public/assets/`):
-```nginx
-location /.protected/ {
-    internal;
-    root /path/to/project/public/assets;
-}
-```
-
-**Custom `SS_PROTECTED_ASSETS_PATH`** (folder outside webroot):
-```nginx
-# If SS_PROTECTED_ASSETS_PATH resolves to .../current/restricted_assets
-location /restricted_assets/ {
-    internal;
-    root /path/to/project;
-}
-```
-
-**Laravel Forge with zero-downtime deployments:**
-```nginx
-# server root: /home/forge/sitename.com/current/public
-# SS_PROTECTED_ASSETS_PATH: /home/forge/sitename.com/current/restricted_assets
-
-location /restricted_assets/ {
-    internal;
-    root /home/forge/sitename.com/current;
-}
-```
-
-#### Where to place it
-
-Add the location block **after the PHP location block**, at the bottom of the `server { }` block. Since it's `internal`, ordering with other locations doesn't matter — but keeping it at the bottom makes it easy to spot as a non-standard addition.
-
-```nginx
-server {
-    root /home/forge/sitename.com/current/public;
-    # ... standard config ...
-
-    location ~ \.php$ {
-        # ... PHP-FPM ...
-    }
-
-    # Signed asset URLs — X-Accel-Redirect
-    location /restricted_assets/ {
-        internal;
-        root /home/forge/sitename.com/current;
-    }
-}
-```
-
-#### The `internal` directive
-
-This makes the location only respond to `X-Accel-Redirect` headers from PHP. Direct browser requests to `/restricted_assets/...` return 404. Without `internal`, anyone could bypass the signed URL check by requesting the path directly.
-
-### Apache (X-Sendfile)
-
-1. Install and enable mod_xsendfile:
-   ```bash
-   sudo a2enmod xsendfile
-   sudo systemctl restart apache2
-   ```
-
-2. Set `ASSET_FILE_SERVER=apache` in `.env`
-
-3. Add to your Apache config or `.htaccess`:
-
-   **Default setup**:
-   ```apache
-   <IfModule mod_xsendfile.c>
-       XSendFile On
-       XSendFilePath /path/to/project/public/assets/.protected
-   </IfModule>
-   ```
-
-   **Custom setup** (using `SS_PROTECTED_ASSETS_PATH`):
-   ```apache
-   <IfModule mod_xsendfile.c>
-       XSendFile On
-       XSendFilePath /path/to/project/protected_assets
-   </IfModule>
-   ```
-
-4. Run the verification task to get your exact configuration:
-   ```bash
-   vendor/bin/sake tasks:SignedAssetUrlVerifyTask        # Silverstripe 6
-   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask    # Silverstripe 5
-   ```
-
-**How it works**: PHP validates the signed URL, then sends an `X-Sendfile` header with the absolute file path. Apache serves the file directly, bypassing PHP for the actual file transfer.
-
-### Performance Considerations
-
-| Method | Pros | Cons |
-|--------|------|------|
-| **PHP** (default) | No server config needed, works everywhere | Higher memory usage, slower for large files |
-| **Nginx** | Very fast, low memory | Requires nginx config access |
-| **Apache** | Fast, works with .htaccess | Requires mod_xsendfile installation |
-
-For most sites, PHP streaming is sufficient. Consider web server handoff if you:
-- Serve many large files (videos, archives)
-- Have high concurrent download traffic
-- Need to minimize PHP memory usage
-
-## Usage
+- **Public files untouched**: `SignedURL` and `AutoURL` return the normal URL for a file that is
+  not protected, so templates can use them for every file
+- **Page caching kept in step**: a page's `Cache-Control` is capped so it is not cached longer than
+  the signed URLs it holds (see [Browser and page caching](#browser-and-page-caching))
+- **Web server handoff** (optional): the file is sent by nginx (X-Accel-Redirect) or Apache
+  (X-Sendfile) instead of streamed through PHP
+
+## How a signed URL is checked
+
+1. **URL Generation**: PHP generates a signed URL with HMAC hash and expiry timestamp
+2. **Request**: User requests the signed URL
+3. **Validation**: Controller validates hash and checks expiry
+4. **Session Check**: If URL is session-bound, validates against current session
+5. **Admin Check**: If user has CMS access and may view the file (`canView()`), signature validation is bypassed
+6. **Serving**: File is streamed via SilverStripe's AssetStore (handles hash-based paths automatically)
+
+## Signing a file's URL in PHP and templates
 
 ### In PHP
 
@@ -335,7 +111,7 @@ $signedUrl = $service->generateSignedURL('path/to/file.pdf', 3600, true);  // Se
 | `$File.AutoURL(ttl)`                     | Signed URL with custom TTL in seconds                           |
 | `$File.RequiresSignedURL`                | Boolean: true if file is protected                              |
 
-## Policies
+## Named policies
 
 Named policies provide convenient presets for TTL and session binding. Use them in templates for cleaner, more maintainable code.
 
@@ -374,7 +150,7 @@ and logs a warning naming the unknown policy (from 1.2.0; earlier versions fell 
 The warning goes to the `Psr\Log\LoggerInterface` service, which Silverstripe ships without a
 handler: attach one in your project to see it.
 
-## URL Formats
+## What a signed URL looks like
 
 Generated URLs use S3-style query parameters for clean, readable paths:
 
@@ -399,7 +175,7 @@ Examples:
 
 This format keeps the asset path readable (like S3 pre-signed URLs) while signature parameters are in the query string.
 
-## Session Binding
+## Session-bound URLs
 
 When `bind_to_session` is enabled (globally or per-URL), the signed URL includes a hash of the user's session. This means:
 
@@ -440,16 +216,7 @@ SilverStripe\Control\Session:
   cookie_samesite: Lax
 ```
 
-## How It Works
-
-1. **URL Generation**: PHP generates a signed URL with HMAC hash and expiry timestamp
-2. **Request**: User requests the signed URL
-3. **Validation**: Controller validates hash and checks expiry
-4. **Session Check**: If URL is session-bound, validates against current session
-5. **Admin Check**: If user has CMS access and may view the file (`canView()`), signature validation is bypassed
-6. **Serving**: File is streamed via SilverStripe's AssetStore (handles hash-based paths automatically)
-
-## Browser & Page Caching
+## Browser and page caching
 
 ### Automatic Cache Header Management
 
@@ -502,7 +269,7 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
   auto_cache_headers: false
 ```
 
-## Partial Caching (Template Layer)
+## Partial caching in templates
 
 When using SilverStripe's partial caching (`<% cached %>`), signed URLs require special consideration because they contain expiration timestamps. Note that auto cache headers (above) handle **browser caching**, while this section covers **server-side template caching**.
 
@@ -596,7 +363,7 @@ public function SignedURLCacheWindow(int $windowSeconds = 3600): string
 <% end_uncached %>
 ```
 
-## Protected Assets & Versioned Staging
+## Protected assets and versioned staging
 
 SilverStripe's asset system stores files in either a **public** or **protected** folder based on:
 - **CanViewType permissions**: Restricted files (LoggedInUsers, OnlyTheseUsers, or inherited from parent)
@@ -697,7 +464,7 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
   check_published_status: false
 ```
 
-## Security Considerations
+## Security considerations
 
 - **Keep your secret safe**: The `ASSET_SIGNING_SECRET` should be long, random, and never committed to version control
 - **Use HTTPS**: Signed URLs should be served over HTTPS to prevent interception
@@ -706,9 +473,263 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
 - **Rotate secrets**: Consider rotating the signing secret periodically
 - **Unpublished files**: By default, unpublished files are not accessible via signed URLs (see Protected Assets section)
 
-## Development & Testing
+## Technical
 
-### Verification Task
+### Version compatibility
+
+| Branch | Module version | Silverstripe | PHP |
+|--------|----------------|--------------|-----|
+| `main` | `1.2` - `1.3` | 5, 6 | 8.1+ (8.3+ on Silverstripe 6) |
+| - (tags only) | `1.0` - `1.1.x` | 5 | 8.1+ |
+
+`composer.json` is the source of truth for exact constraints. See [CHANGELOG.md](CHANGELOG.md) and,
+when upgrading from 1.1, [UPGRADING.md](UPGRADING.md).
+
+### Requirements and installation
+
+- Silverstripe 5 or 6 (`silverstripe/framework` and `silverstripe/assets`), PHP 8.1+
+- Optional: `silverstripe/versioned` (installed with `silverstripe/recipe-cms`). Without it files
+  have no draft state, so only their view permissions decide whether a URL is signed.
+- Local filesystem asset storage. Remote storage (S3 and similar) should use that provider's own
+  pre-signed URLs instead.
+
+```bash
+composer require restruct/silverstripe-signed-asset-urls
+```
+
+Then set `ASSET_SIGNING_SECRET` (below) and flush (`sake dev/build flush=1` on Silverstripe 5,
+`sake db:build --flush` on 6). The module adds no database tables.
+
+### Configuration
+
+#### Environment Variables
+
+Add to your `.env` file:
+
+```bash
+# Required: Secret key for signing URLs (use a long random string)
+ASSET_SIGNING_SECRET="your-secret-key-min-32-characters-recommended"
+```
+
+Any long random string will do. To generate one:
+
+```bash
+openssl rand -hex 32
+```
+
+Silverstripe's own token generator works too, and prints a 40-character token:
+`vendor/bin/sake generatesecuretoken` on Silverstripe 6, `vendor/bin/sake dev/generatesecuretoken`
+on 5. On 5 it wraps the token in a `Security: token:` YAML snippet; copy only the token into
+`ASSET_SIGNING_SECRET`. Use a secret of its own for this module rather than reusing another one:
+changing it invalidates every signed URL already handed out, and nothing else.
+
+#### SilverStripe Config
+
+Create `app/_config/signed-asset-urls.yml` to override defaults:
+
+```yaml
+Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
+  # Default TTL in seconds (default: 3600 = 1 hour)
+  default_ttl: 3600
+
+  # Bind URLs to user session by default (default: false)
+  bind_to_session: false
+
+  # Automatically adjust page Cache-Control headers based on signed URL TTLs (default: true)
+  auto_cache_headers: true
+
+  # Check if files are published before serving - respects Versioned staging (default: true)
+  # Set to false if you don't use Versioned staging on files
+  check_published_status: true
+
+  # Permissions that bypass signing (default: uses Versioned::$non_live_permissions)
+  # This typically includes CMS_ACCESS_*, VIEW_DRAFT_CONTENT, etc.
+  # The bypass covers only files the user may view (File::canView()); see
+  # "CMS users and bypass_permissions" below.
+  # Set to custom array to override:
+  # bypass_permissions:
+  #   - 'ADMIN'
+  #   - 'CMS_ACCESS_AssetAdmin'
+```
+
+All configuration options have sensible defaults - you typically only need to set `ASSET_SIGNING_SECRET` in `.env` to get started.
+
+### Web server file handoff (optional)
+
+By default, files are served via PHP streaming. For better performance on high-traffic sites, you can enable web server file handoff using X-Sendfile (Apache) or X-Accel-Redirect (Nginx).
+
+#### Environment Variable
+
+Add to your `.env` file:
+
+```bash
+# File serving method: 'php' (default), 'apache', or 'nginx'
+ASSET_FILE_SERVER=php
+```
+
+#### Nginx (X-Accel-Redirect)
+
+**How it works:** PHP validates the signed URL, then sends an `X-Accel-Redirect` header pointing to an internal nginx location. Nginx intercepts this and serves the file directly from disk, bypassing PHP for the actual file transfer.
+
+##### Setup
+
+1. Set `ASSET_FILE_SERVER=nginx` in `.env`
+
+2. Add an `internal` location block to your nginx server config (see examples below)
+
+3. Run the verification task to confirm your setup:
+   ```bash
+   vendor/bin/sake tasks:SignedAssetUrlVerifyTask        # Silverstripe 6
+   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask    # Silverstripe 5
+   ```
+
+##### How the location path is determined
+
+The module derives the location from `basename(SS_PROTECTED_ASSETS_PATH)`:
+
+| `SS_PROTECTED_ASSETS_PATH` | X-Accel-Redirect header | Required nginx location |
+|---|---|---|
+| _(not set, default `.protected`)_ | `/.protected/Uploads/abc123/file.pdf` | `/.protected/` |
+| `../restricted_assets` | `/restricted_assets/Uploads/abc123/file.pdf` | `/restricted_assets/` |
+| `/var/www/project/protected_assets` | `/protected_assets/Uploads/abc123/file.pdf` | `/protected_assets/` |
+
+**The location path must match the basename exactly.** A common mistake is using the wrong folder name (e.g., `/protected_assets/` when the env var resolves to a folder named `restricted_assets`).
+
+##### `root` vs `alias`
+
+Both work, but `root` is recommended, because it is more portable:
+
+- **`root`**: nginx **appends** the full URI to the root path. Point `root` at the **parent** of the protected folder:
+  ```
+  location /restricted_assets/ + root .../current
+  → .../current/restricted_assets/Uploads/abc123/file.pdf  ✓
+  ```
+- **`alias`**: nginx **replaces** the location prefix with the alias path. Point `alias` at the **exact** folder (trailing slash required):
+  ```
+  location /restricted_assets/ + alias .../current/restricted_assets/
+  → .../current/restricted_assets/Uploads/abc123/file.pdf  ✓
+  ```
+
+With `root`, if you rename the folder, you only change the location, not the root. With `alias`, you repeat the full path. Either way, the path must be absolute: nginx does not resolve `..`.
+
+**Common mistake: `root` pointing to the folder itself:**
+```
+# WRONG: root points to the folder → path doubled!
+location /restricted_assets/ + root .../current/restricted_assets
+→ .../current/restricted_assets/restricted_assets/file.pdf  ✗
+```
+
+##### Can I reuse the server root?
+
+No. The `server { root ... }` points to the public webroot (e.g., `.../current/public`), but protected assets live **outside** `public/` as a sibling (e.g., `.../current/restricted_assets`). Nginx does not resolve `..` in `root`/`alias` directives, so you need a separate absolute path.
+
+##### Configuration examples
+
+**Default setup** (`.protected` inside `public/assets/`):
+```nginx
+location /.protected/ {
+    internal;
+    root /path/to/project/public/assets;
+}
+```
+
+**Custom `SS_PROTECTED_ASSETS_PATH`** (folder outside webroot):
+```nginx
+# If SS_PROTECTED_ASSETS_PATH resolves to .../current/restricted_assets
+location /restricted_assets/ {
+    internal;
+    root /path/to/project;
+}
+```
+
+**Laravel Forge with zero-downtime deployments:**
+```nginx
+# server root: /home/forge/sitename.com/current/public
+# SS_PROTECTED_ASSETS_PATH: /home/forge/sitename.com/current/restricted_assets
+
+location /restricted_assets/ {
+    internal;
+    root /home/forge/sitename.com/current;
+}
+```
+
+##### Where to place it
+
+Add the location block **after the PHP location block**, at the bottom of the `server { }` block. Since it's `internal`, ordering with other locations doesn't matter, but keeping it at the bottom makes it easy to spot as a non-standard addition.
+
+```nginx
+server {
+    root /home/forge/sitename.com/current/public;
+    # ... standard config ...
+
+    location ~ \.php$ {
+        # ... PHP-FPM ...
+    }
+
+    # Signed asset URLs - X-Accel-Redirect
+    location /restricted_assets/ {
+        internal;
+        root /home/forge/sitename.com/current;
+    }
+}
+```
+
+##### The `internal` directive
+
+This makes the location only respond to `X-Accel-Redirect` headers from PHP. Direct browser requests to `/restricted_assets/...` return 404. Without `internal`, anyone could bypass the signed URL check by requesting the path directly.
+
+#### Apache (X-Sendfile)
+
+1. Install and enable mod_xsendfile:
+   ```bash
+   sudo a2enmod xsendfile
+   sudo systemctl restart apache2
+   ```
+
+2. Set `ASSET_FILE_SERVER=apache` in `.env`
+
+3. Add to your Apache config or `.htaccess`:
+
+   **Default setup**:
+   ```apache
+   <IfModule mod_xsendfile.c>
+       XSendFile On
+       XSendFilePath /path/to/project/public/assets/.protected
+   </IfModule>
+   ```
+
+   **Custom setup** (using `SS_PROTECTED_ASSETS_PATH`):
+   ```apache
+   <IfModule mod_xsendfile.c>
+       XSendFile On
+       XSendFilePath /path/to/project/protected_assets
+   </IfModule>
+   ```
+
+4. Run the verification task to get your exact configuration:
+   ```bash
+   vendor/bin/sake tasks:SignedAssetUrlVerifyTask        # Silverstripe 6
+   vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask    # Silverstripe 5
+   ```
+
+**How it works**: PHP validates the signed URL, then sends an `X-Sendfile` header with the absolute file path. Apache serves the file directly, bypassing PHP for the actual file transfer.
+
+#### Performance Considerations
+
+| Method | Pros | Cons |
+|--------|------|------|
+| **PHP** (default) | No server config needed, works everywhere | Higher memory usage, slower for large files |
+| **Nginx** | Very fast, low memory | Requires nginx config access |
+| **Apache** | Fast, works with .htaccess | Requires mod_xsendfile installation |
+
+For most sites, PHP streaming is sufficient. Consider web server handoff if you:
+- Serve many large files (videos, archives)
+- Have high concurrent download traffic
+- Need to minimize PHP memory usage
+
+### Development and testing
+
+#### Verification Task
 
 A BuildTask is included to verify your configuration and test URL generation/validation:
 
@@ -750,11 +771,11 @@ Wrong hash (expect invalid): PASS
 Expired URL (expect expired): PASS
 ```
 
-### Manual Testing Checklist
+#### Manual Testing Checklist
 
 After making changes to the controller or signing service, verify the following:
 
-#### 1. Build and config verification
+##### 1. Build and config verification
 
 ```bash
 # Silverstripe 6
@@ -768,7 +789,7 @@ vendor/bin/sake dev/tasks/SignedAssetUrlVerifyTask
 
 Both should complete without errors. The verify task checks signing secret, protected folder path, URL generation, and signature validation (valid, invalid, expired).
 
-#### 2. Signature validation (curl)
+##### 2. Signature validation (curl)
 
 Test that invalid signatures are rejected:
 
@@ -778,7 +799,7 @@ curl -k -s -o /dev/null -w "%{http_code}" \
   "https://your-site.loc/signed-asset/path/to/file.pdf?s=invalidsignature&e=9999999999"
 ```
 
-#### 3. File serving (browser)
+##### 3. File serving (browser)
 
 Load a page that renders signed asset URLs (e.g. a page with protected images or download links). Verify:
 
@@ -786,7 +807,7 @@ Load a page that renders signed asset URLs (e.g. a page with protected images or
 - Download links work and serve the correct file
 - URLs contain the expected `?s=...&e=...` query parameters
 
-#### 4. File path resolution
+##### 4. File path resolution
 
 The controller uses framework-based file resolution (`resolveFilePath()`) which handles both hash-based paths (`Uploads/abc1234567/file.pdf`) and natural paths (`Uploads/file.pdf`). To verify resolution works for a specific file:
 
@@ -801,15 +822,15 @@ ls {protected_folder}/{dirname}/{basename}             # natural path
 
 The signed URL for that file should work regardless of which layout exists on disk.
 
-#### 5. Web server handoff (if configured)
+##### 5. Web server handoff (if configured)
 
 If `ASSET_FILE_SERVER` is set to `apache` or `nginx`:
 
-- Verify files are served without PHP streaming (check response headers for `X-Sendfile` or `X-Accel-Redirect` — note these headers are consumed by the web server and won't appear in browser dev tools)
+- Verify files are served without PHP streaming (check response headers for `X-Sendfile` or `X-Accel-Redirect`; note these headers are consumed by the web server and won't appear in browser dev tools)
 - Check PHP memory usage stays low when serving large files
 - If handoff fails, the controller falls through to PHP streaming automatically
 
-### Running the tests
+#### Running the tests
 
 The suite needs a booted Silverstripe app, so it runs from a host project that requires this
 module through a path repository with `"options": { "symlink": true }` (`/tests` is excluded from
@@ -830,7 +851,7 @@ such a host for every supported Silverstripe major. Staged File is still covered
 `SignedAssetUrlStagedFileTest` switches File to draft/live staging for its own tests and checks
 that an unpublished file is refused and a published one served.
 
-#### What is NOT covered by automated tests
+##### What is NOT covered by automated tests
 
 - The nginx X-Accel-Redirect handoff is checked only as far as the response header: whether nginx
   then serves the file depends on the server config above. The Apache X-Sendfile branch has no
@@ -839,3 +860,11 @@ that an unpublished file is refused and a published one served.
   the test runner. Starting a real session for an anonymous visitor (cookie, binding, refusal to
   another browser) is covered by the browser tests in `tests/browser/`.
 
+### Further reading
+
+- [UPGRADING.md](UPGRADING.md) - upgrading from 1.1
+- [CHANGELOG.md](CHANGELOG.md) - release history
+
+### License
+
+MIT, see [LICENSE](LICENSE).
