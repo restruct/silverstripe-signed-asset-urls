@@ -448,6 +448,12 @@ When a signed URL is accessed, the controller validates:
 2. **Session binding**: If URL is session-bound, validates current session
 3. **Published status** (optional): If `check_published_status` is enabled, denies access to unpublished files
 
+The response it serves then goes through the asset store's `updateResponse` extension hook, with
+the same arguments as core's own asset responses (`$response, $asset, $context`), so headers that
+other modules add to every file response (eg the SVG sandbox headers of
+restruct/silverstripe-svg-images) are also on a signed one. `$context['signedUrl']` is `true` for a
+signed response.
+
 ### CMS users and `bypass_permissions`
 
 A user holding one of the `bypass_permissions` is served a file without a signature only when

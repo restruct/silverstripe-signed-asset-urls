@@ -14,6 +14,12 @@
 
 ### Fixed
 
+- A file served through a signed URL skipped the asset store's `updateResponse` extension hook,
+  which core runs on its own asset responses, so headers other modules add there were missing (eg
+  the CSP sandbox and `nosniff` headers restruct/silverstripe-svg-images sets on an SVG). Both the
+  PHP-streamed and the web server (X-Sendfile / X-Accel-Redirect) response now run it, with core's
+  arguments; the context also carries `signedUrl => true`
+  ([#14](https://github.com/restruct/silverstripe-signed-asset-urls/issues/14)).
 - A signed `.avif` (eg `Convert('avif')`) was served as `application/octet-stream`, and so as a
   download. AVIF is now `image/avif`, and an extension the controller does not know takes its type
   from core's `HTTP.MimeTypes` before falling back to `application/octet-stream`

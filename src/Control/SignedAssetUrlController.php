@@ -482,7 +482,8 @@ class SignedAssetUrlController extends Controller
                 $forceAttachment
             );
             if ($response) {
-                return $response;
+                # Issue #14: let the asset store's updateResponse extensions add their headers
+                return $this->applyAssetStoreResponseExtensions($response, $file, $variantPath, $resolved);
             }
         }
 
@@ -542,7 +543,67 @@ class SignedAssetUrlController extends Controller
             return $this->httpError(404, $variantPath ? 'Variant file not found' : 'File stream not available');
         }
 
-        return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService, $forceAttachment);
+        $response = $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService, $forceAttachment);
+
+        # Issue #14: let the asset store's updateResponse extensions add their headers
+        return $this->applyAssetStoreResponseExtensions($response, $file, $variantPath, $resolved);
+    }
+
+    /**
+     * Run the asset store's `updateResponse` extension hook on a signed file response.
+     *
+     * Core runs this hook in FlysystemAssetStore::getResponseFor(), which a signed URL never goes
+     * through: the controller builds its own response. Without this, headers that modules add to
+     * every asset response (eg the CSP sandbox and nosniff headers of restruct/silverstripe-svg-images
+     * on an SVG) were missing on a file served through a signed URL (issue #14).
+     *
+     * The arguments match core's call on assets 2.x and 3.x: `($response, $asset, $context)`, with
+     * $asset the file ID in the store and $context holding `visibility` and `parsedFileID`. The
+     * context also carries `signedUrl => true`, so an extension can tell a signed response apart.
+     *
+     * Runs after the controller has set its own headers, as core runs it after building the
+     * response, so an extension may also override those.
+     *
+     * @param HTTPResponse $response The response built by createStreamResponse() / createWebServerResponse()
+     * @param File $file The file being served
+     * @param string|null $variantPath Variant path (hash-prefixed variant filename) or null for the original
+     * @param array{absolutePath: string, relativePath: string, isProtected?: bool}|null $resolved Resolved file paths, if any
+     */
+    protected function applyAssetStoreResponseExtensions(
+        HTTPResponse $response,
+        File $file,
+        ?string $variantPath,
+        ?array $resolved
+    ): HTTPResponse {
+        $store = Injector::inst()->get(AssetStore::class);
+        # Only an Extensible store (FlysystemAssetStore and subclasses) has the hook
+        if (!is_object($store) || !method_exists($store, 'extend')) {
+            return $response;
+        }
+
+        $variant = $variantPath ? ($this->parseVariantIdentifier($variantPath) ?? '') : '';
+        # The file ID in the store, as core passes it: the resolved relative path when we have it.
+        # Without one (served through the store's stream or the no-op-variant fallback): the
+        # variant's own path in the file's folder, or the original's filename.
+        $asset = $resolved['relativePath'] ?? null;
+        if ($asset === null) {
+            $dirname = dirname($file->getFilename());
+            $asset = $variantPath
+                ? ($dirname !== '.' ? $dirname . '/' : '') . $variantPath
+                : $file->getFilename();
+        }
+        $context = [
+            # Variants are only ever resolved under the protected folder (see serveFile())
+            'visibility' => ($resolved['isProtected'] ?? true)
+                ? FlysystemAssetStore::VISIBILITY_PROTECTED
+                : FlysystemAssetStore::VISIBILITY_PUBLIC,
+            'parsedFileID' => new ParsedFileID($file->getFilename(), (string) $file->getHash(), $variant, $asset),
+            'signedUrl' => true,
+        ];
+
+        $store->extend('updateResponse', $response, $asset, $context);
+
+        return $response;
     }
 
     /**
