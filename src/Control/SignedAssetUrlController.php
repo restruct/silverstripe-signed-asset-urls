@@ -3,11 +3,13 @@
 namespace Restruct\SilverStripe\SignedAssetUrls\Control;
 
 use SilverStripe\Assets\File;
+use SilverStripe\Assets\FilenameParsing\HashFileIDHelper;
 use SilverStripe\Assets\FilenameParsing\ParsedFileID;
 use SilverStripe\Assets\Flysystem\FlysystemAssetStore;
 use SilverStripe\Assets\Flysystem\LocalFilesystemAdapter;
 use SilverStripe\Assets\Storage\AssetStore;
 use SilverStripe\Control\Controller;
+use SilverStripe\Control\HTTP;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Control\HTTPStreamResponse;
@@ -15,6 +17,7 @@ use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Security\Security;
 use SilverStripe\Versioned\Versioned;
 use Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService;
+use Throwable;
 
 /**
  * Controller for serving signed asset URLs.
@@ -270,11 +273,42 @@ class SignedAssetUrlController extends Controller
             $afterSep = substr($maskedFilename, $sep + 2);   // "{variant}.ext"
             $dot = strpos($afterSep, '.');
             $variantToken = $dot !== false ? substr($afterSep, 0, $dot) : $afterSep;
+            # Issue #18: a converted variant (core's Convert('webp'), an ExtRewrite sub-variant)
+            # is stored under the CONVERTED extension, "photo__{variant}.webp" for "photo.jpg".
+            # Re-appending the File's own suffix pointed at a name that does not exist on disk
+            # (the AssetStore fallback still found the bytes) and served them as image/jpeg.
+            # Core's file ID helper applies its own extension-rewrite rule, so the name matches
+            # what core wrote, multi-dot names included.
+            # 'ExtRewrite' is AbstractFileIDHelper::EXTENSION_REWRITE_VARIANT, written out because
+            # that class only exists from assets 2.2 and this module supports ^2
+            if (str_contains($variantToken, 'ExtRewrite')) {
+                $rewritten = $this->buildRewrittenVariantPath($file, $variantToken);
+                if ($rewritten !== null) {
+                    return $rewritten;
+                }
+            }
             $realFilename = $stem . '__' . $variantToken . $suffix;
         } else {
             $realFilename = $name; // original (no variant)
         }
         return substr($file->getHash(), 0, 10) . '/' . $realFilename;
+    }
+
+    /**
+     * "{hashPrefix}/{stem}__{variant}{suffix}" for a variant that rewrites the extension, built by
+     * core's HashFileIDHelper (protected files use the hash layout, which serveFile() assumes for
+     * every variant). Null when core cannot build it (eg an undecodable ExtRewrite token), so the
+     * caller falls back to the File's own extension.
+     */
+    protected function buildRewrittenVariantPath(File $file, string $variantToken): ?string
+    {
+        try {
+            # the Name only, no folder: serveFile() prepends the File's folder itself
+            $fileID = HashFileIDHelper::create()->buildFileID((string) $file->Name, (string) $file->getHash(), $variantToken);
+        } catch (Throwable $e) {
+            return null;
+        }
+        return is_string($fileID) && $fileID !== '' ? $fileID : null;
     }
 
     /**
@@ -448,7 +482,8 @@ class SignedAssetUrlController extends Controller
                 $forceAttachment
             );
             if ($response) {
-                return $response;
+                # Issue #14: let the asset store's updateResponse extensions add their headers
+                return $this->applyAssetStoreResponseExtensions($response, $file, $variantPath, $resolved);
             }
         }
 
@@ -508,7 +543,67 @@ class SignedAssetUrlController extends Controller
             return $this->httpError(404, $variantPath ? 'Variant file not found' : 'File stream not available');
         }
 
-        return $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService, $forceAttachment);
+        $response = $this->createStreamResponse($stream, $fileSize, $mimeType, $displayFilename, $expires, $signingService, $forceAttachment);
+
+        # Issue #14: let the asset store's updateResponse extensions add their headers
+        return $this->applyAssetStoreResponseExtensions($response, $file, $variantPath, $resolved);
+    }
+
+    /**
+     * Run the asset store's `updateResponse` extension hook on a signed file response.
+     *
+     * Core runs this hook in FlysystemAssetStore::getResponseFor(), which a signed URL never goes
+     * through: the controller builds its own response. Without this, headers that modules add to
+     * every asset response (eg the CSP sandbox and nosniff headers of restruct/silverstripe-svg-images
+     * on an SVG) were missing on a file served through a signed URL (issue #14).
+     *
+     * The arguments match core's call on assets 2.x and 3.x: `($response, $asset, $context)`, with
+     * $asset the file ID in the store and $context holding `visibility` and `parsedFileID`. The
+     * context also carries `signedUrl => true`, so an extension can tell a signed response apart.
+     *
+     * Runs after the controller has set its own headers, as core runs it after building the
+     * response, so an extension may also override those.
+     *
+     * @param HTTPResponse $response The response built by createStreamResponse() / createWebServerResponse()
+     * @param File $file The file being served
+     * @param string|null $variantPath Variant path (hash-prefixed variant filename) or null for the original
+     * @param array{absolutePath: string, relativePath: string, isProtected?: bool}|null $resolved Resolved file paths, if any
+     */
+    protected function applyAssetStoreResponseExtensions(
+        HTTPResponse $response,
+        File $file,
+        ?string $variantPath,
+        ?array $resolved
+    ): HTTPResponse {
+        $store = Injector::inst()->get(AssetStore::class);
+        # Only an Extensible store (FlysystemAssetStore and subclasses) has the hook
+        if (!is_object($store) || !method_exists($store, 'extend')) {
+            return $response;
+        }
+
+        $variant = $variantPath ? ($this->parseVariantIdentifier($variantPath) ?? '') : '';
+        # The file ID in the store, as core passes it: the resolved relative path when we have it.
+        # Without one (served through the store's stream or the no-op-variant fallback): the
+        # variant's own path in the file's folder, or the original's filename.
+        $asset = $resolved['relativePath'] ?? null;
+        if ($asset === null) {
+            $dirname = dirname($file->getFilename());
+            $asset = $variantPath
+                ? ($dirname !== '.' ? $dirname . '/' : '') . $variantPath
+                : $file->getFilename();
+        }
+        $context = [
+            # Variants are only ever resolved under the protected folder (see serveFile())
+            'visibility' => ($resolved['isProtected'] ?? true)
+                ? FlysystemAssetStore::VISIBILITY_PROTECTED
+                : FlysystemAssetStore::VISIBILITY_PUBLIC,
+            'parsedFileID' => new ParsedFileID($file->getFilename(), (string) $file->getHash(), $variant, $asset),
+            'signedUrl' => true,
+        ];
+
+        $store->extend('updateResponse', $response, $asset, $context);
+
+        return $response;
     }
 
     /**
@@ -656,12 +751,25 @@ class SignedAssetUrlController extends Controller
             'png' => 'image/png',
             'gif' => 'image/gif',
             'webp' => 'image/webp',
+            # Issue #17: a signed .avif (Convert('avif'), restruct/silverstripe-webp-images) was
+            # served as application/octet-stream, which also forces a download
+            'avif' => 'image/avif',
             'svg' => 'image/svg+xml',
             'pdf' => 'application/pdf',
             'zip' => 'application/zip',
         ];
 
-        return $mimeTypes[strtolower($extension)] ?? 'application/octet-stream';
+        $extension = strtolower($extension);
+        if (isset($mimeTypes[$extension])) {
+            return $mimeTypes[$extension];
+        }
+
+        # Any other extension: core's extension map (HTTP.MimeTypes, the list HTTP::get_mime_type()
+        # falls back to), which projects and modules can extend in YAML. Read directly rather than
+        # through get_mime_type(), which would sniff a file relative to BASE_PATH instead.
+        $coreTypes = (array) HTTP::config()->uninherited('MimeTypes');
+        $coreType = $coreTypes[$extension] ?? null;
+        return is_string($coreType) && $coreType !== '' ? $coreType : 'application/octet-stream';
     }
 
     /**

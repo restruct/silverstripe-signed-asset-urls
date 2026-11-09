@@ -111,6 +111,49 @@ $signedUrl = $service->generateSignedURL('path/to/file.pdf', 3600, true);  // Se
 | `$File.AutoURL(ttl)`                     | Signed URL with custom TTL in seconds                           |
 | `$File.RequiresSignedURL`                | Boolean: true if file is protected                              |
 
+## WebP, AVIF and other converted variants
+
+A variant converted by core (`$Image.ScaleWidth(400).Convert('webp')`, or `'avif'`) is signed and
+served like any other variant, with its own content type (`image/webp`, `image/avif`), also through
+`MaskedURL`. Extensions the controller does not know itself take their content type from core's
+`SilverStripe\Control\HTTP.MimeTypes`, which a project can extend in YAML.
+
+### Using with restruct/silverstripe-webp-images
+
+[restruct/silverstripe-webp-images](https://github.com/restruct/silverstripe-webp-images) 3.1+
+serves a resized jpeg/png as its WebP variant by rewriting the image's URL. A signed URL is built
+from the stored file instead (`getSourceURL()`), so it would skip that rewrite. When both modules
+are installed, webp-images implements the hook below and `AutoURL`, `SignedURL` and `MaskedURL`
+sign the WebP variant: `$Image.ScaleWidth(400).AutoURL` gives a signed `.webp` URL, under the same
+rules as the plain URL (resized images only by default, `DisableWebP` honoured). Nothing to
+configure. Its `$Image.Picture` helper is not signed yet
+([webp-images #2](https://github.com/restruct/silverstripe-webp-images/issues/2)).
+
+### Swapping the signed file: `updateSignedURLFile`
+
+Before a signed or masked URL is built, the DBFile calls `updateSignedURLFile(&$file)` on its
+extensions, with `$file` set to itself. An extension may replace `$file` with another variant of
+the **same** stored file (same Filename and Hash); the protection check, the signed path and the
+served file then follow the replacement. Anything else (another file, or not a DBFile) is ignored,
+so a URL is never signed for a file other than the one asked for.
+
+```php
+use SilverStripe\Assets\Storage\DBFile;
+use SilverStripe\Core\Extension;
+
+/** @extends Extension<DBFile> */
+class SignMyVariantExtension extends Extension
+{
+    public function updateSignedURLFile(&$file): void
+    {
+        $converted = $file->Convert('webp');
+        if ($converted) {
+            $file = $converted;
+        }
+    }
+}
+```
+
 ## Named policies
 
 Named policies provide convenient presets for TTL and session binding. Use them in templates for cleaner, more maintainable code.
@@ -405,6 +448,12 @@ When a signed URL is accessed, the controller validates:
 2. **Session binding**: If URL is session-bound, validates current session
 3. **Published status** (optional): If `check_published_status` is enabled, denies access to unpublished files
 
+The response it serves then goes through the asset store's `updateResponse` extension hook, with
+the same arguments as core's own asset responses (`$response, $asset, $context`), so headers that
+other modules add to every file response (eg the SVG sandbox headers of
+restruct/silverstripe-svg-images) are also on a signed one. `$context['signedUrl']` is `true` for a
+signed response.
+
 ### CMS users and `bypass_permissions`
 
 A user holding one of the `bypass_permissions` is served a file without a signature only when
@@ -479,7 +528,7 @@ Restruct\SilverStripe\SignedAssetUrls\Services\AssetUrlSigningService:
 
 | Branch | Module version | Silverstripe | PHP |
 |--------|----------------|--------------|-----|
-| `main` | `1.2` - `1.3` | 5, 6 | 8.1+ (8.3+ on Silverstripe 6) |
+| `main` | `1.2` - `1.4` | 5, 6 | 8.1+ (8.3+ on Silverstripe 6) |
 | - (tags only) | `1.0` - `1.1.x` | 5 | 8.1+ |
 
 `composer.json` is the source of truth for exact constraints. See [CHANGELOG.md](CHANGELOG.md) and,
