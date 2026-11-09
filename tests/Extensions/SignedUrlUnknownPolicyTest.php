@@ -100,7 +100,17 @@ class SignedUrlUnknownPolicyTest extends SapphireTest
         $file->AutoURL(120);
         $file->AutoURL();
 
-        $this->assertSame([], $this->warnings());
+        // $this->assertSame([], $this->warnings());
+        # 'ms' is session-bound, and the suite runs on the CLI without a session, so the
+        # unbindable-URL warning (#6, once per request) is logged here by design. The old
+        # assertion only passed while an earlier test in the run had already used up that
+        # once-per-request warning and no request in between had reset it: it failed when run
+        # alone, and when a FunctionalTest ran between them. What this test is about is the
+        # unknown-policy warning, so every OTHER warning must still be absent.
+        $this->assertSame([], array_values(array_filter(
+            $this->warnings(),
+            fn (string $message) => !str_contains($message, 'there is no session to bind it to')
+        )));
     }
 
     /**
