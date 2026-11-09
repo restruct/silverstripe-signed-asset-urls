@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.4.0 (unreleased)
+
+### Added
+
+- Extension hook `updateSignedURLFile(&$file)` on DBFile: before `SignedURL()`, `AutoURL()` or
+  `MaskedURL()` builds its URL, an extension may swap the DBFile for another variant of the same
+  stored file, which is then checked, signed and served instead. A swap to another stored file,
+  or to anything that is not a DBFile, is ignored. Used by restruct/silverstripe-webp-images 3.1+
+  to sign the WebP variant of a resized image, which a signed URL used to skip (it is built from
+  `getSourceURL()`, without the `updateURL` hook). See the README, "WebP, AVIF and other converted
+  variants".
+
+### Fixed
+
+- A signed `.avif` (eg `Convert('avif')`) was served as `application/octet-stream`, and so as a
+  download. AVIF is now `image/avif`, and an extension the controller does not know takes its type
+  from core's `HTTP.MimeTypes` before falling back to `application/octet-stream`
+  ([#17](https://github.com/restruct/silverstripe-signed-asset-urls/issues/17)).
+- `MaskedURL()` on a converted variant (eg `Convert('webp')`) served the WebP bytes with the
+  original's content type (`image/jpeg`): the controller rebuilt the on-disk name with the File's
+  own extension. It now builds it with core's file ID helper, which applies the converted
+  extension ([#18](https://github.com/restruct/silverstripe-signed-asset-urls/issues/18)).
+
+### Changed
+
+- `SignedUrlDBFileExtension::buildAssetPath()` takes an optional `?DBFile $dbFile` (the file to
+  build the path for, default the owner). A subclass that overrides it must add the parameter.
+
 ## 1.3.0 (2026-10-12)
 
 ### Changed
