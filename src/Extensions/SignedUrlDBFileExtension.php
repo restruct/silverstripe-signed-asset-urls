@@ -45,14 +45,18 @@ class SignedUrlDBFileExtension extends Extension
             // File data exists, continue even though exists() returned false
         }
 
+        # Let other modules swap the file that is signed (eg its WebP variant), see
+        # resolveSignedURLFile(). Everything below runs on the swapped file.
+        $file = $this->resolveSignedURLFile();
+
         // Check if file requires signed URLs (is protected)
-        if (!$this->requiresSignedURL()) {
+        if (!$file->requiresSignedURL()) {
             // Public file - return normal URL
-            return $dbFile->getURL();
+            return $file->getURL();
         }
 
         // Build the path for signing (handles both originals and variants)
-        $path = $this->buildAssetPath();
+        $path = $this->buildAssetPath($file);
         if (!$path) {
             return null;
         }
@@ -176,7 +180,9 @@ class SignedUrlDBFileExtension extends Extension
 
         [$ttl, $bindToSession] = $this->resolvePolicy($policyOrTtl, $bindToSession);
 
-        $path = $this->buildAssetPath();
+        # same hook as SignedURL(): the masked path is built from the swapped file, so the masked
+        # URL carries that file's variant token and extension (eg .webp)
+        $path = $this->buildAssetPath($this->resolveSignedURLFile());
         if (!$path) {
             return null;
         }
@@ -210,17 +216,48 @@ class SignedUrlDBFileExtension extends Extension
     }
 
     /**
+     * The file a signed or masked URL is built for: this DBFile, unless an extension swaps it.
+     *
+     * Extension hook: updateSignedURLFile(DBFile &$file). $file starts as this DBFile; an
+     * extension may replace it with another DBFile of the SAME stored file (same Filename and
+     * Hash, another variant), eg restruct/silverstripe-webp-images hands over the WebP variant of
+     * a resized jpeg/png. The URL is then built from getSourceURL(), which skips the updateURL
+     * hook, so without this hook a signed URL always pointed at the unconverted variant.
+     * A replacement that is not a DBFile, or belongs to another stored file, is ignored: the File
+     * record (and so the protection decision and the controller's lookup) is found by Filename
+     * and Hash, and a URL for another file would be signed under this file's permissions.
+     */
+    protected function resolveSignedURLFile(): DBFile
+    {
+        /** @var DBFile $dbFile */
+        $dbFile = $this->getOwner();
+        $file = $dbFile;
+        $dbFile->extend('updateSignedURLFile', $file);
+
+        if (
+            !$file instanceof DBFile
+            || $file->getFilename() !== $dbFile->getFilename()
+            || $file->getHash() !== $dbFile->getHash()
+        ) {
+            return $dbFile;
+        }
+        return $file;
+    }
+
+    /**
      * Build the asset path for signing.
      *
      * For variants: extracts hash/filename__variant.ext from getSourceURL()
      * For originals: returns FileFilename
      *
+     * @param DBFile|null $dbFile The file to build the path for (1.4: the file chosen by
+     *                            resolveSignedURLFile()); null = this extension's owner
      * @return string|null The path to sign, or null if cannot be built
      */
-    protected function buildAssetPath(): ?string
+    protected function buildAssetPath(?DBFile $dbFile = null): ?string
     {
         /** @var DBFile $dbFile */
-        $dbFile = $this->getOwner();
+        $dbFile = $dbFile ?? $this->getOwner();
 
         $filename = $dbFile->getFilename();
         $hash = $dbFile->getHash();
